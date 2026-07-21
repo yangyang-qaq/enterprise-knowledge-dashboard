@@ -180,14 +180,7 @@ apply_source_context_to_messages()  (in utils/middleware.py)
 
 ---
 
-## Upstream Contributions
 
-| PR | Description |
-|---|---|
-| [#27222](https://github.com/open-webui/open-webui/pull/27222) | fix: knowledge_fs grep splits on literal backslash-n instead of newline |
-| [#27249](https://github.com/open-webui/open-webui/pull/27249) | fix: mutable default argument in generate_function_chat_completion |
-
----
 
 ## Local Setup
 
