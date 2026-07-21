@@ -204,21 +204,8 @@ WEBUI_SECRET_KEY="your-key" \
   python -m uvicorn open_webui.main:app --host 127.0.0.1 --port 8080
 ```
 
----
 
-## Statistics
 
-| Metric | Count |
-|---|---|
-| New database tables | 5 |
-| New API endpoints | 26 |
-| New frontend pages & components | 13 |
-| Modified files | 10 |
-| Issues investigated & resolved | 19 |
-| Upstream bug-fix PRs | 2 |
-| Development period | 2 days |
-
----
 
 ## License
 
