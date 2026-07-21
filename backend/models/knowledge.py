@@ -149,6 +149,7 @@ class KnowledgeDirectoryForm(BaseModel):
 ####################
 class KnowledgeUserModel(KnowledgeModel):
     user: Optional[UserResponse] = None
+    file_count: int | None = None
 
 
 class KnowledgeResponse(KnowledgeModel):
@@ -322,6 +323,14 @@ class KnowledgeTable:
 
                 knowledge_ids = [kb.id for kb, _ in items]
                 grants_map = await AccessGrants.get_grants_by_resources('knowledge', knowledge_ids, db=db)
+                file_counts = {}
+                if knowledge_ids:
+                    file_count_result = await db.execute(
+                        select(KnowledgeFile.knowledge_id, func.count(KnowledgeFile.id))
+                        .where(KnowledgeFile.knowledge_id.in_(knowledge_ids))
+                        .group_by(KnowledgeFile.knowledge_id)
+                    )
+                    file_counts = dict(file_count_result.all())
 
                 knowledge_bases = []
                 for knowledge_base, user in items:
@@ -336,6 +345,7 @@ class KnowledgeTable:
                                     )
                                 ).model_dump(),
                                 'user': (UserModel.model_validate(user).model_dump() if user else None),
+                                'file_count': file_counts.get(knowledge_base.id, 0),
                             }
                         )
                     )
@@ -1350,3 +1360,17 @@ class KnowledgeSnapshotCompareForm(BaseModel):
 
     snapshot_a_id: str
     snapshot_b_id: str
+
+
+class KnowledgePromptUpdateForm(BaseModel):
+    """Form to update the RAG prompt template for a knowledge base."""
+
+    prompt_template: str
+
+
+DEFAULT_RAG_PROMPT_TEMPLATE = (
+    "You are a helpful AI assistant. Use the following reference materials to answer the user's question.\n\n"
+    "Reference Materials:\n{context}\n\n"
+    "User Question: {query}\n\n"
+    "If the reference materials do not contain relevant information, please say so honestly."
+)

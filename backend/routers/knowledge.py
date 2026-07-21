@@ -45,6 +45,8 @@ from open_webui.models.knowledge import (
     KnowledgeSnapshotCompareResult,
     KnowledgeSnapshotCreateForm,
     KnowledgeSnapshotModel,
+    KnowledgePromptUpdateForm,
+    DEFAULT_RAG_PROMPT_TEMPLATE,
     Knowledges,
     KnowledgeUserResponse,
 )
@@ -2651,21 +2653,24 @@ async def merge_knowledge_chunks(
     await db.execute(sa_delete(KnowledgeChunk).where(KnowledgeChunk.id.in_(old_ids)))
     db.add(merged_chunk)
 
-    # Re-index chunks after the deleted range
+    # Rebuild chunk_index consecutively.
+    # Step 1: shift all to 10000+ (guaranteed no conflict with 0..N range)
+    from sqlalchemy import text as sa_text
+    await db.execute(
+        sa_text("UPDATE knowledge_chunk SET chunk_index = chunk_index + 10000 "
+                "WHERE knowledge_id = :kid AND file_id = :fid"),
+        {"kid": id, "fid": form_data.file_id},
+    )
+    await db.flush()
+    # Step 2: re-fetch and reassign 0,1,2... safely (all values >= 10000)
     result = await db.execute(
         sa_select(KnowledgeChunk)
-        .where(
-            KnowledgeChunk.knowledge_id == id,
-            KnowledgeChunk.file_id == form_data.file_id,
-            KnowledgeChunk.chunk_index > form_data.end_index,
-        )
+        .where(KnowledgeChunk.knowledge_id == id, KnowledgeChunk.file_id == form_data.file_id)
         .order_by(KnowledgeChunk.chunk_index.asc())
     )
-    trailing = result.scalars().all()
-    offset = form_data.end_index - form_data.start_index
-    for chunk in trailing:
-        chunk.chunk_index -= offset
-        chunk.updated_at = now
+    for i, c in enumerate(result.scalars().all()):
+        c.chunk_index = i
+        c.updated_at = now
 
     await db.commit()
     return {'status': True, 'merged_chunk_id': merged_chunk.id}
@@ -2715,12 +2720,12 @@ async def split_knowledge_chunk(
     chunk.content_hash = hashlib.sha256(part_a.encode()).hexdigest()
     chunk.updated_at = now
 
-    # Create new chunk for part_b
+    # Create new chunk for part_b with a safe temp index
     new_chunk = KnowledgeChunk(
         id=str(uuid.uuid4()),
         knowledge_id=id,
         file_id=chunk.file_id,
-        chunk_index=chunk.chunk_index + 1,
+        chunk_index=-1,  # temp, will be renumbered below
         content=part_b,
         token_count=len(part_b) // 4,
         meta=(chunk.meta or {}).copy(),
@@ -2729,21 +2734,24 @@ async def split_knowledge_chunk(
         updated_at=now,
     )
     db.add(new_chunk)
+    await db.flush()
 
-    # Shift trailing chunks
+    # Rebuild all chunk_index for this file (same safe approach as merge)
+    from sqlalchemy import text as sa_text
+    await db.execute(
+        sa_text("UPDATE knowledge_chunk SET chunk_index = chunk_index + 10000 "
+                "WHERE knowledge_id = :kid AND file_id = :fid"),
+        {"kid": id, "fid": chunk.file_id},
+    )
+    await db.flush()
     result = await db.execute(
         sa_select(KnowledgeChunk)
-        .where(
-            KnowledgeChunk.knowledge_id == id,
-            KnowledgeChunk.file_id == chunk.file_id,
-            KnowledgeChunk.chunk_index > chunk.chunk_index,
-        )
+        .where(KnowledgeChunk.knowledge_id == id, KnowledgeChunk.file_id == chunk.file_id)
         .order_by(KnowledgeChunk.chunk_index.asc())
     )
-    trailing = result.scalars().all()
-    for tc in trailing:
-        tc.chunk_index += 1
-        tc.updated_at = now
+    for i, c in enumerate(result.scalars().all()):
+        c.chunk_index = i
+        c.updated_at = now
 
     await db.commit()
     return {'status': True, 'new_chunk_id': new_chunk.id}
@@ -2793,12 +2801,16 @@ async def reindex_knowledge_chunks(
     ]
 
     try:
-        await save_docs_to_vector_db(
-            request=request,
-            collection_name=id,
-            docs=docs,
-            user=user,
-            bypass_embedding=False,
+        from fastapi.concurrency import run_in_threadpool
+        config = await get_retrieval_config()
+        await run_in_threadpool(
+            save_docs_to_vector_db,
+            request, docs, id, config,
+            None,  # metadata
+            True,  # overwrite
+            True,  # split
+            False, # add
+            user,
         )
     except Exception as e:
         log.exception(e)
@@ -3426,3 +3438,59 @@ async def delete_knowledge_snapshot(
     )
     await db.commit()
     return {'status': True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Enterprise Knowledge Dashboard – Phase 6: Prompt Management
+# ─────────────────────────────────────────────────────────────
+
+
+@router.get('/{id}/prompt')
+async def get_knowledge_prompt(
+    id: str,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get the RAG prompt template for a knowledge base."""
+    knowledge = await Knowledges.get_knowledge_by_id(id, db=db)
+    if not knowledge:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
+
+    meta = knowledge.meta or {}
+    template = meta.get('rag_prompt_template', DEFAULT_RAG_PROMPT_TEMPLATE)
+    return {
+        'prompt_template': template,
+        'is_default': template == DEFAULT_RAG_PROMPT_TEMPLATE,
+        'available_vars': ['{query}', '{context}', '{kb_name}'],
+    }
+
+
+@router.patch('/{id}/prompt')
+async def update_knowledge_prompt(
+    request: Request,
+    id: str,
+    form_data: KnowledgePromptUpdateForm,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Update the RAG prompt template for a knowledge base."""
+    knowledge = await Knowledges.get_knowledge_by_id(id, db=db)
+    if not knowledge:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
+
+    if not knowledge.user_id == user.id and user.role != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    meta = dict(knowledge.meta or {})
+    meta['rag_prompt_template'] = form_data.prompt_template
+    updated = await Knowledges.update_knowledge_meta_by_id(id, meta, db=db)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to update prompt')
+
+    return {
+        'status': True,
+        'prompt_template': form_data.prompt_template,
+    }

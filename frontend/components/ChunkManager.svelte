@@ -90,14 +90,22 @@
 	// ── Merge selected chunks ──
 	const handleMerge = async () => {
 		if (selectedChunks.size < 2) return;
-		const indices = [...selectedChunks]
-			.map(id => chunks.findIndex(c => c.id === id))
-			.sort((a, b) => a - b);
+		// Use chunk_index from DB, not array position — array position
+		// can differ from chunk_index after previous merges/splits
+		const selectedArr = [...selectedChunks];
+		const targetChunks = selectedArr
+			.map(id => chunks.find(c => c.id === id))
+			.filter(Boolean)
+			.sort((a, b) => a.chunk_index - b.chunk_index);
 
-		// Check contiguous
-		for (let i = 1; i < indices.length; i++) {
-			if (indices[i] !== indices[i - 1] + 1) {
-				toast.error('Only adjacent chunks can be merged.');
+		if (targetChunks.length < 2) return;
+
+		const dbIndices = targetChunks.map(c => c.chunk_index);
+
+		// Check contiguous in chunk_index space
+		for (let i = 1; i < dbIndices.length; i++) {
+			if (dbIndices[i] !== dbIndices[i - 1] + 1) {
+				toast.error('Only adjacent chunks can be merged. Select chunks with consecutive chunk_index.');
 				return;
 			}
 		}
@@ -107,8 +115,8 @@
 				$user?.token ?? '',
 				knowledgeId,
 				selectedFileId,
-				Math.min(...indices),
-				Math.max(...indices)
+				Math.min(...dbIndices),
+				Math.max(...dbIndices)
 			);
 			selectedChunks.clear();
 			await loadChunks();
