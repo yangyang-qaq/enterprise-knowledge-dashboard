@@ -1,68 +1,62 @@
 # 企业级知识库管理后台
 
 > 基于 [Open WebUI](https://github.com/open-webui/open-webui) (128K+ Star) 二次开发
-> 开发者：顾扬 | 2026-07-20
-
-## 项目简介
-
-在 Open WebUI 的 FastAPI + SvelteKit 架构上进行二次开发，独立设计并实现了可视化的 RAG 知识库管理仪表板。
+> 开发者：顾扬 | 2026-07-20 ~ 2026-07-21
 
 ## 功能模块
 
-| Tab | 功能 | 说明 |
-|---|---|---|
-| 📁 Files | 文件管理 | 原有功能 + Unlink Only 按钮 |
-| 🧩 Chunks | 分块管理 | 预览/合并/拆分/重建向量 |
-| ⏳ Processing | 进度监控 | SSE 实时推送 + 轮询 |
-| 📊 Evaluate | 检索评估 | 查询→标注→recall/precision/MRR |
-| 📸 Snapshots | 版本管理 | 快照/回滚/差异对比 |
+| Tab | 功能 |
+|---|---|
+| 📁 Files | 文件管理 + Unlink Only 按钮 |
+| 🧩 Chunks | 分块预览 / 合并 / 拆分 / 重建向量 |
+| ⏳ Processing | 实时进度监控（SSE + 轮询） |
+| 📊 Evaluate | 检索质量评估（recall/precision/MRR）+ Prompt 模板配置 |
+| 📸 Snapshots | 版本管理（快照 / 回滚 / 差异对比） |
 
 ## 技术栈
 
-- **后端**：Python / FastAPI / SQLAlchemy / ChromaDB / LangChain
-- **前端**：SvelteKit / TypeScript / Tailwind CSS
-- **AI**：DeepSeek API / RAG / Sentence Transformers
-- **实时**：SSE (Server-Sent Events)
+Python / FastAPI / SQLAlchemy / ChromaDB / LangChain / SvelteKit / TypeScript / Tailwind CSS / DeepSeek API / SSE / Prompt Engineering
 
 ## 项目结构
 
 ```
 ├── backend/
-│   ├── models/knowledge.py          # 数据模型 (新增 5 张表)
-│   ├── routers/knowledge.py         # API 路由 (新增 24 个端点)
-│   ├── routers/files.py             # 文件处理集成
+│   ├── models/knowledge.py          # 数据模型（5 张新表）
+│   ├── routers/knowledge.py         # API 路由（26 个新端点）
+│   ├── routers/files.py             # 文件处理进度集成
 │   └── migrations/                  # Alembic 迁移
 ├── frontend/
-│   ├── components/                  # Svelte 组件 (7 个)
-│   ├── routes/                      # 页面路由 (5 个)
+│   ├── components/                  # 7 个 Svelte 组件
+│   ├── routes/                      # 5 个页面路由
 │   └── apis/                        # API 客户端
-├── docs/                            # 项目文档
-│   ├── 开发文档.md                  # 完整技术方案
-│   ├── 问题记录.md                  # 15 个技术问题排查
-│   ├── 行动清单.md                  # 原始计划
-│   └── read.md                      # 简历描述
-├── 测试文档/                        # 知识库测试数据
+├── docs/                            # 开发文档 / 问题记录
+├── 测试文档/                        # 4 份测试数据
 └── README.md
 ```
 
 ## 统计数据
 
-- 新增数据库表：5 张
-- 新增 API 端点：24 个
-- 新增前端组件：5 页面 + 7 组件
-- 修改文件：11 个
-- 解决的问题：15 个
-- 开发周期：1 天
+| 指标 | 数据 |
+|---|---|
+| 新增数据库表 | 5 |
+| 新增 API 端点 | 26 |
+| 新增前端页面 | 5 |
+| 新增前端组件 | 8 |
+| 解决的问题 | 19 |
+| 上游 PR | 2 |
+| 开发周期 | 2 天 |
 
-## 本地运行
+## 上游贡献
 
+- [#27222](https://github.com/open-webui/open-webui/pull/27222) fix: knowledge_fs grep splits on literal backslash-n
+- [#27249](https://github.com/open-webui/open-webui/pull/27249) fix: mutable default argument in generate_function_chat_completion
+
+## 部署方式
+
+将 `backend/` 和 `frontend/` 目录中的文件合并到 Open WebUI 项目对应位置，然后：
 ```bash
-# 原始项目
-git clone https://github.com/open-webui/open-webui.git
 cd open-webui
-
-# 将本仓库的文件合并进去：
-# backend/    → open-webui/backend/open_webui/
-# frontend/   → open-webui/src/lib/ 和 src/routes/
-# 然后 npm run build && 启动 uvicorn
+npm run build
+cd backend
+WEBUI_SECRET_KEY="your-key" python -m uvicorn open_webui.main:app --host 127.0.0.1 --port 8080
 ```
