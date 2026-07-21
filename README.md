@@ -1,94 +1,225 @@
-# 企业级知识库管理后台
+# Enterprise Knowledge Base Management Dashboard
 
-> 基于 [Open WebUI](https://github.com/open-webui/open-webui) (128K+ Star) 二次开发
-> 开发者：顾扬 | 2026-07-20 ~ 2026-07-21
+> A comprehensive RAG observability and management layer built on top of [Open WebUI](https://github.com/open-webui/open-webui) (128K+ Stars)
+> Author: Guyang | 2026-07-20 ~ 2026-07-21
 
 ---
 
-## 功能模块
+## Overview
 
-| Tab | 功能 | 说明 |
+This project adds an enterprise-grade knowledge base management dashboard to Open WebUI, giving users full visibility and control over their RAG (Retrieval-Augmented Generation) pipeline. It introduces 5 new tabs in the knowledge base detail page, 5 new database tables, and 26 new API endpoints.
+
+## Feature Modules
+
+| Tab | Feature | Description |
 |---|---|---|
-| 📁 Files | 文件管理 + Unlink Only | 只取消关联不删文件，配合快照回滚 |
-| 🧩 Chunks | 分块预览 / 合并 / 拆分 / 重建向量 | 可视化 RAG 分块结果，手动修正 |
-| ⏳ Processing | 实时进度监控 | SSE 推送 + 3秒轮询兜底 |
-| 📊 Evaluate | 检索评估 + Prompt 配置 | recall/precision/MRR + 自定义 Prompt 模板 |
-| 📸 Snapshots | 版本管理 | 快照 / 回滚 / 差异对比 |
+| 📁 Files | File Management + "Unlink Only" | Remove a file from a KB without physically deleting it, enabling safe snapshot rollbacks |
+| 🧩 Chunks | Chunk Preview / Merge / Split / Reindex | Visualize how documents are split, manually adjust chunk boundaries, and rebuild vector indexes |
+| ⏳ Processing | Real-time Progress Monitoring | SSE push + 3-second polling fallback for reliable progress tracking |
+| 📊 Evaluate | Retrieval Quality Assessment + Prompt Config | Query → Retrieve → Annotate → compute recall/precision/MRR; custom RAG prompt templates |
+| 📸 Snapshots | Version Management | Create, rollback, compare, and delete KB snapshots |
 
 ---
 
-## 技术栈
+## Architecture
 
-**后端**：Python / FastAPI / SQLAlchemy / ChromaDB / LangChain
-
-**前端**：SvelteKit / TypeScript / Tailwind CSS
-
-**AI**：DeepSeek API / RAG / Prompt Engineering / SSE
+```
+┌─────────────────────────────────────────────────┐
+│              Browser (SvelteKit)                 │
+│   Tab Nav: Files │ Chunks │ Processing │ Eval │ Snap │
+├─────────────────────────────────────────────────┤
+│               FastAPI Backend                     │
+│  Knowledge Router │ Retrieval Router             │
+│  26 new endpoints  │ Prompt Template Injection   │
+│        │                    │                    │
+│   ┌────┴────┐  ┌──────────┐  ┌───────────┐     │
+│   │ SQLite  │  │ ChromaDB │  │ LLM API   │     │
+│   │(5 tables)│  │ (vectors)│  │(Inference)│     │
+│   └─────────┘  └──────────┘  └───────────┘     │
+└─────────────────────────────────────────────────┘
+```
 
 ---
 
-## 项目结构
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Backend** | Python / FastAPI (async ASGI) |
+| **Frontend** | SvelteKit / TypeScript / Tailwind CSS |
+| **Database** | SQLite (dev) / PostgreSQL (prod), SQLAlchemy ORM + Alembic |
+| **Vector DB** | ChromaDB |
+| **Document Processing** | LangChain Text Splitters |
+| **Real-time** | SSE (Server-Sent Events) |
+| **AI/LLM** | DeepSeek API / RAG / Prompt Engineering |
+
+---
+
+## Project Structure
 
 ```
 ├── README.md
+├── DESIGN.md                           # Design document
 ├── backend/
-│   ├── models/knowledge.py         # 5 张新表 + Pydantic 模型
-│   ├── routers/knowledge.py        # 26 个 API 端点
-│   ├── routers/files.py            # 上传流程进度钩子
-│   ├── middleware.py               # Prompt 模板聊天管道注入
-│   └── migrations/                 # Alembic 迁移
+│   ├── models/knowledge.py             # 5 new tables + Pydantic models
+│   ├── routers/knowledge.py            # 26 new API endpoints
+│   ├── routers/files.py                # Upload pipeline progress hooks
+│   ├── middleware.py                   # Prompt template injection in chat pipeline
+│   └── migrations/                     # Alembic migration
 ├── frontend/
-│   ├── components/                 # 7 个 Svelte 组件
-│   ├── routes/                     # 5 个页面 + layout
-│   └── apis/                       # API 客户端
-└── 测试文档/                       # 4 份中文测试数据
+│   ├── components/                     # 7 Svelte components
+│   │   ├── ChunkManager.svelte
+│   │   ├── ProcessingDashboard.svelte
+│   │   ├── EvaluatePanel.svelte
+│   │   ├── SnapshotManager.svelte
+│   │   ├── KnowledgeBase.svelte
+│   │   └── Files.svelte
+│   ├── routes/                         # 5 pages + layout
+│   │   └── workspace/knowledge/[id]/
+│   │       ├── +layout.svelte
+│   │       ├── +page.svelte
+│   │       ├── chunks/+page.svelte
+│   │       ├── processing/+page.svelte
+│   │       ├── evaluate/+page.svelte
+│   │       └── snapshots/+page.svelte
+│   └── apis/                           # API client functions
+└── test-docs/                          # 4 Chinese test documents
 ```
 
 ---
 
-## 统计数据
+## Database Design (5 New Tables)
 
-| 指标 | 数据 |
+| Table | Purpose |
 |---|---|
-| 新增数据库表 | 5 |
-| 新增 API 端点 | 26 |
-| 新增前端页面/组件 | 13 |
-| 修改文件数 | 10 |
-| 排查解决问题 | 19 |
-| 上游 PR | 2 |
-| 开发周期 | 2 天 |
+| `knowledge_chunk` | Individual chunk tracking with content hash, token count, and metadata |
+| `knowledge_processing_task` | Per-file processing status (pending → chunking → embedding → completed/failed) |
+| `knowledge_batch_task` | Batch processing summary for multi-file uploads |
+| `knowledge_relevance_judgment` | Ground truth annotations for retrieval evaluation |
+| `knowledge_snapshot` | KB version snapshots storing file associations and chunk metadata as JSON |
 
 ---
 
-## 上游贡献
+## API Endpoints (26 New)
 
-| PR | 内容 |
+All endpoints are mounted under `/api/v1/knowledge/{id}/`:
+
+### Chunks
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/chunks/preview` | Preview chunking results without writing to vector DB |
+| `GET` | `/files/{fileId}/chunks` | Get all chunks for a file |
+| `GET` | `/chunks/{chunkId}` | Get a single chunk's full content |
+| `POST` | `/chunks/merge` | Merge consecutive chunks |
+| `POST` | `/chunks/split` | Split a chunk at a specified position |
+| `POST` | `/chunks/reindex` | Rebuild vector index from current chunks |
+
+### Processing
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/progress` | Get processing status for all files in the KB |
+| `GET` | `/progress/stream` | SSE stream for real-time progress updates |
+| `GET` | `/progress/batch` | Batch task progress summary |
+
+### Evaluate
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/evaluate/query` | Execute a test query and return Top-K results |
+| `POST` | `/evaluate/annotate` | Annotate a result as relevant/not-relevant |
+| `GET` | `/evaluate/judgments` | View all annotations grouped by query |
+| `DELETE` | `/evaluate/judgments/{query}` | Delete annotations for a query |
+
+### Snapshots
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/snapshots` | Create a new snapshot |
+| `GET` | `/snapshots` | List all snapshots (reverse chronological) |
+| `POST` | `/{sid}/rollback` | Rollback to a snapshot |
+| `POST` | `/snapshots/compare` | Compare two snapshots (added/removed/modified files) |
+| `DELETE` | `/{sid}` | Delete a snapshot |
+
+### Prompt
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/prompt` | Get the KB's custom RAG prompt template |
+| `PATCH` | `/prompt` | Update the KB's custom RAG prompt template |
+
+---
+
+## Key Design Decisions
+
+1. **Progress Tracking**: DB-persisted status + in-memory store for SSE. Polling every 3s as fallback ensures reliability even when SSE connections fail.
+2. **Snapshots**: Store file_id associations + chunk metadata as JSON. Rollback restores associations only — vectors are re-indexed on demand via the Chunks tab.
+3. **Evaluation Metrics**: Server-side computation of recall@K, precision@K, and MRR from stored annotations.
+4. **Chunk Persistence**: Chunks are written to the `knowledge_chunk` table during `process_file()`, enabling instant preview without reloading documents.
+5. **Dual-channel Reliability**: SSE provides real-time updates; polling provides a guaranteed fallback.
+6. **Prompt Template Injection**: KB-level custom RAG prompt templates with `{query}`, `{context}`, `{kb_name}` variable substitution, injected via the chat middleware pipeline.
+
+---
+
+## Integration Points
+
+### File Upload Pipeline
+```
+add_file_to_knowledge_by_id()
+  → _update_processing_progress(status='chunking')
+  → process_file() → LangChain load → split → embed
+  → write chunks to knowledge_chunk table
+  → _update_processing_progress(status='completed')
+```
+
+### Chat Pipeline (Prompt Injection)
+```
+apply_source_context_to_messages()  (in utils/middleware.py)
+  → Check if source is a knowledge base
+  → Look up KB.meta.rag_prompt_template
+  → Use custom template if available, otherwise fall back to global rag.template
+  → Substitute {query}, {context}, {kb_name} variables
+  → Inject into system message
+```
+
+---
+
+## Upstream Contributions
+
+| PR | Description |
 |---|---|
-| [#27222](https://github.com/open-webui/open-webui/pull/27222) | fix: knowledge_fs grep splits on literal backslash-n |
+| [#27222](https://github.com/open-webui/open-webui/pull/27222) | fix: knowledge_fs grep splits on literal backslash-n instead of newline |
 | [#27249](https://github.com/open-webui/open-webui/pull/27249) | fix: mutable default argument in generate_function_chat_completion |
 
 ---
 
-## 本地运行
+## Local Setup
 
-将此仓库文件合并到 Open WebUI（v0.10.2）项目中：
+Merge the files from this repository into an Open WebUI (v0.10.2) project:
 
 ```bash
 # backend/  → open-webui/backend/open_webui/
-# frontend/ → open-webui/src/lib/ 和 src/routes/
+# frontend/ → open-webui/src/lib/ and src/routes/
 
 cd open-webui
 npm run build
 cd backend
-WEBUI_SECRET_KEY="your-key" HF_ENDPOINT="https://hf-mirror.com" \
+WEBUI_SECRET_KEY="your-key" \
   python -m uvicorn open_webui.main:app --host 127.0.0.1 --port 8080
 ```
 
 ---
 
-## 核心亮点
+## Statistics
 
-- **RAG 全链路**：文档加载→LangChain 分块→ChromaDB 向量化→检索评估→Prompt 注入，全链路参与
-- **SQLite UNIQUE 约束**：深入排查 3 种失败方案，最终用原始 SQL + 10000 偏移解决
-- **双通道可靠性**：SSE 实时推送 + 3 秒轮询兜底
-- **Prompt 闭环**：从模板编辑到聊天管道注入，完整链路打通
+| Metric | Count |
+|---|---|
+| New database tables | 5 |
+| New API endpoints | 26 |
+| New frontend pages & components | 13 |
+| Modified files | 10 |
+| Issues investigated & resolved | 19 |
+| Upstream bug-fix PRs | 2 |
+| Development period | 2 days |
+
+---
+
+## License
+
+This project follows the same license as Open WebUI.
