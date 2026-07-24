@@ -28,6 +28,7 @@
 
 	let files: any[] = [];
 	let selectedFileId = '';
+	let chunkMethod = 'general';
 	let chunks: any[] = [];
 	let selectedChunks: Set<string> = new Set();
 
@@ -64,7 +65,7 @@
 			chunks = await getFileChunks($user?.token ?? '', knowledgeId, selectedFileId);
 			// If no chunks yet, preview to generate them
 			if (!chunks || chunks.length === 0) {
-				chunks = await previewKnowledgeChunks($user?.token ?? '', knowledgeId, selectedFileId);
+				chunks = await previewKnowledgeChunks($user?.token ?? '', knowledgeId, selectedFileId, chunkMethod);
 			}
 		} catch (e: any) {
 			toast.error(e?.detail ?? 'Failed to load chunks');
@@ -78,7 +79,7 @@
 		if (!selectedFileId) return;
 		loading = true;
 		try {
-			chunks = await previewKnowledgeChunks($user?.token ?? '', knowledgeId, selectedFileId);
+			chunks = await previewKnowledgeChunks($user?.token ?? '', knowledgeId, selectedFileId, chunkMethod);
 			toast.success(`Generated ${chunks.length} chunks`);
 		} catch (e: any) {
 			toast.error(e?.detail ?? 'Failed to preview chunks');
@@ -90,22 +91,14 @@
 	// ── Merge selected chunks ──
 	const handleMerge = async () => {
 		if (selectedChunks.size < 2) return;
-		// Use chunk_index from DB, not array position — array position
-		// can differ from chunk_index after previous merges/splits
-		const selectedArr = [...selectedChunks];
-		const targetChunks = selectedArr
-			.map(id => chunks.find(c => c.id === id))
-			.filter(Boolean)
-			.sort((a, b) => a.chunk_index - b.chunk_index);
+		const indices = [...selectedChunks]
+			.map(id => chunks.findIndex(c => c.id === id))
+			.sort((a, b) => a - b);
 
-		if (targetChunks.length < 2) return;
-
-		const dbIndices = targetChunks.map(c => c.chunk_index);
-
-		// Check contiguous in chunk_index space
-		for (let i = 1; i < dbIndices.length; i++) {
-			if (dbIndices[i] !== dbIndices[i - 1] + 1) {
-				toast.error('Only adjacent chunks can be merged. Select chunks with consecutive chunk_index.');
+		// Check contiguous
+		for (let i = 1; i < indices.length; i++) {
+			if (indices[i] !== indices[i - 1] + 1) {
+				toast.error('Only adjacent chunks can be merged.');
 				return;
 			}
 		}
@@ -115,8 +108,8 @@
 				$user?.token ?? '',
 				knowledgeId,
 				selectedFileId,
-				Math.min(...dbIndices),
-				Math.max(...dbIndices)
+				Math.min(...indices),
+				Math.max(...indices)
 			);
 			selectedChunks.clear();
 			await loadChunks();
@@ -218,13 +211,25 @@
 		<select
 			bind:value={selectedFileId}
 			on:change={loadChunks}
-			class="w-full max-w-md rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
+			class="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm"
 		>
 			<option value="">-- Choose a file --</option>
 			{#each files as file}
 				<option value={file.id}>{file.filename}</option>
 			{/each}
 		</select>
+t		<div class="mt-2">
+				<label class="block text-sm font-medium mb-2">Method</label>
+				<select bind:value={chunkMethod} class="w-full max-w-md rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm">
+					<option value="general">General</option>
+					<option value="naive">Fixed-size</option>
+					<option value="book">Book</option>
+					<option value="paper">Paper</option>
+					<option value="resume">Resume</option>
+					<option value="table">Table</option>
+					<option value="qa">Q&A</option>
+				</select>
+			</div>
 	</div>
 
 	<!-- Chunk Table -->
@@ -257,6 +262,8 @@
 							</th>
 							<th class="px-3 py-2 text-left">Preview</th>
 							<th class="w-24 px-3 py-2 text-right">Tokens</th>
+							<th class="px-3 py-2 text-left text-xs">Keywords</th>
+							<th class="px-3 py-2 text-left text-xs">Questions</th>
 							<th class="w-24 px-3 py-2 text-center">Actions</th>
 						</tr>
 					</thead>
@@ -287,6 +294,16 @@
 								</td>
 								<td class="px-3 py-2 text-right text-gray-400 text-xs">
 									~{chunk.token_count ?? '-'}
+								</td>
+								<td class="px-3 py-2 text-xs text-gray-500">
+									<div class="flex flex-wrap gap-1">
+										{#each (chunk.meta?.keywords || []) as kw}
+											<span class="px-1 py-0.5 bg-blue-50 dark:bg-blue-900/30 rounded text-blue-600 dark:text-blue-400 text-xs">{kw}</span>
+										{/each}
+									</div>
+								</td>
+								<td class="px-3 py-2 text-xs text-gray-500 max-w-[12rem] truncate">
+									{chunk.meta?.questions?.[0] || '-'}
 								</td>
 								<td class="px-3 py-2 text-center">
 									<div class="flex items-center justify-center gap-1">
@@ -360,7 +377,7 @@
 			tabindex="-1"
 		>
 			<div
-				class="bg-white dark:bg-gray-900 rounded-xl shadow-xl max-w-md w-full mx-4"
+				class="bg-white dark:bg-gray-900 rounded-xl shadow-xl w-full mx-4"
 				on:click|stopPropagation
 			>
 				<div class="p-4 border-b border-gray-200 dark:border-gray-700">
