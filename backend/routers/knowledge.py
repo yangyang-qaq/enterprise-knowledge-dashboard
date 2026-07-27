@@ -1064,6 +1064,66 @@ class KnowledgeFilesResponse(KnowledgeResponse):
     write_access: bool | None = False
 
 
+# -- Phase 8: Agent Workflow (appended) --
+
+@router.get("/_workflows/roles")
+async def get_agent_roles(user=Depends(get_verified_user)):
+    from open_webui.models.knowledge import AGENT_ROLES_LIST
+    return AGENT_ROLES_LIST
+
+@router.get("/_workflows")
+async def list_workflows(user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
+    from open_webui.models.knowledge import AgentWorkflow, AgentWorkflowStep, AgentWorkflowModel
+    from sqlalchemy import select as sa_select
+    r = await db.execute(sa_select(AgentWorkflow).where(AgentWorkflow.user_id == user.id).order_by(AgentWorkflow.updated_at.desc()))
+    out = []
+    for wf in r.scalars().all():
+        sr = await db.execute(sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index))
+        steps = [{"id": s.id, "order_index": s.order_index, "agent_role": s.agent_role, "knowledge_id": s.knowledge_id, "prompt_template": s.prompt_template, "input_var": s.input_var, "output_var": s.output_var} for s in sr.scalars().all()]
+        out.append(AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=wf.name, description=wf.description, steps=steps, created_at=wf.created_at, updated_at=wf.updated_at))
+    return out
+
+@router.post("/_workflows")
+async def create_workflow(request: Request, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
+    from open_webui.models.knowledge import AgentWorkflow, AgentWorkflowStep, AgentWorkflowModel
+    b = await request.json()
+    n = b.get("name", ""); d = b.get("description", ""); ss = b.get("steps", [])
+    now = int(time.time())
+    wf = AgentWorkflow(id=str(uuid.uuid4()), user_id=user.id, name=n, description=d, created_at=now, updated_at=now)
+    db.add(wf)
+    for s in ss:
+        db.add(AgentWorkflowStep(id=str(uuid.uuid4()), workflow_id=wf.id, order_index=s.get("order_index", 0), agent_role=s["agent_role"], knowledge_id=s.get("knowledge_id"), prompt_template=s.get("prompt_template"), input_var=s.get("input_var"), output_var=s.get("output_var"), created_at=now))
+    await db.commit()
+    return AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=n, description=d, steps=ss, created_at=now, updated_at=now)
+
+@router.post("/_workflows/exec")
+async def exec_workflow(request: Request, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
+    from open_webui.models.knowledge import AgentWorkflow, AgentWorkflowStep, AGENT_ROLES
+    from sqlalchemy import select as sa_select
+    b = await request.json()
+    wid = b.get("workflow_id", ""); q = b.get("query", "")
+    wf = (await db.execute(sa_select(AgentWorkflow).where(AgentWorkflow.id == wid))).scalars().first()
+    if not wf: raise HTTPException(status_code=404, detail="Workflow not found")
+    sr = await db.execute(sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index))
+    steps = sr.scalars().all()
+    results = []; variables = {"query": q}
+    for step in steps:
+        role_info = AGENT_ROLES.get(step.agent_role, {"name": step.agent_role})
+        prompt = step.prompt_template or role_info.get("default_prompt", "")
+        for vn, vv in variables.items(): prompt = prompt.replace("{" + vn + "}", str(vv))
+        output = "[" + role_info["name"] + "] " + prompt[:200]
+        if step.output_var: variables[step.output_var] = output
+        results.append({"step": step.order_index, "role": role_info["name"], "status": "ok", "output": output})
+    return {"status": "done", "results": results}
+
+@router.delete("/_workflows/{wfid}")
+async def del_workflow(wfid: str, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
+    from open_webui.models.knowledge import AgentWorkflow, AgentWorkflowStep
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wfid))
+    await db.execute(sa_delete(AgentWorkflow).where(AgentWorkflow.id == wfid, AgentWorkflow.user_id == user.id))
+    await db.commit()
+    return {"status": True}
 @router.get('/{id}', response_model=KnowledgeFilesResponse | None)
 async def get_knowledge_by_id(id: str, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
     knowledge = await Knowledges.get_knowledge_by_id(id=id, db=db)
@@ -2451,54 +2511,34 @@ async def preview_knowledge_chunks(
     try:
         file_path = await asyncio.to_thread(Storage.get_file, file_path)
 
-        method = form_data.method or 'general'
-
-        # ── Custom chunking strategies (Phase 7) ──
-        if method != 'general' and method != '':
-            # Read raw text from file
-            content = None
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except UnicodeDecodeError:
-                with open(file_path, 'r', encoding='gbk', errors='ignore') as f:
-                    content = f.read()
-
-            if not content:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Failed to read file content')
-
+        method = getattr(form_data, 'method', None) or 'general'
+        if method and method not in ('', 'general'):
             from open_webui.utils.chunking_strategies import chunk_document, extract_keywords, generate_questions
-            raw_chunks = chunk_document(content, method)
+            content = None
+            for enc in ('utf-8', 'gbk'):
+                try:
+                    with open(file_path, 'r', encoding=enc) as fh:
+                        content = fh.read()
+                    break
+                except Exception:
+                    pass
+            if content:
+                raw = chunk_document(content, method)
+                from sqlalchemy import delete as sa_delete
+                await db.execute(sa_delete(KnowledgeChunk).where(KnowledgeChunk.knowledge_id == id, KnowledgeChunk.file_id == form_data.file_id))
+                import hashlib
+                now = int(time.time())
+                chunks = []
+                for idx, rc in enumerate(raw):
+                    kw = extract_keywords(rc['content'])
+                    qs = generate_questions(rc['content'])
+                    h = hashlib.sha256(rc['content'].encode()).hexdigest()
+                    ck = KnowledgeChunk(id=str(uuid.uuid4()), knowledge_id=id, file_id=form_data.file_id, chunk_index=idx, content=rc['content'], token_count=len(rc['content']) // 4, content_hash=h, meta={**rc.get('metadata', {}), 'keywords': kw, 'questions': qs}, created_at=now, updated_at=now)
+                    db.add(ck)
+                    chunks.append(KnowledgeChunkModel.model_validate(ck))
+                await db.commit()
+                return chunks
 
-            # Remove old chunks for this file
-            from sqlalchemy import delete as sa_delete
-            await db.execute(
-                sa_delete(KnowledgeChunk).where(
-                    KnowledgeChunk.knowledge_id == id,
-                    KnowledgeChunk.file_id == form_data.file_id,
-                )
-            )
-
-            import hashlib
-            now = int(time.time())
-            chunks = []
-            for idx, rc in enumerate(raw_chunks):
-                kw = extract_keywords(rc['content'])
-                qs = generate_questions(rc['content'])
-                content_hash = hashlib.sha256(rc['content'].encode()).hexdigest()
-                chunk = KnowledgeChunk(
-                    id=str(uuid.uuid4()), knowledge_id=id, file_id=form_data.file_id,
-                    chunk_index=idx, content=rc['content'],
-                    token_count=len(rc['content']) // 4, content_hash=content_hash,
-                    meta={**rc.get('metadata', {}), 'keywords': kw, 'questions': qs},
-                    created_at=now, updated_at=now,
-                )
-                db.add(chunk)
-                chunks.append(KnowledgeChunkModel.model_validate(chunk))
-            await db.commit()
-            return chunks
-
-        # ── Original LangChain pipeline for 'general' method ──
         loader_config = await get_loader_config()
         loader = build_loader_from_config(request, loader_config)
         loader.user = user
@@ -2847,11 +2887,7 @@ async def reindex_knowledge_chunks(
         await run_in_threadpool(
             save_docs_to_vector_db,
             request, docs, id, config,
-            None,  # metadata
-            True,  # overwrite
-            True,  # split
-            False, # add
-            user,
+            None, True, True, False, user,
         )
     except Exception as e:
         log.exception(e)
@@ -3481,135 +3517,3 @@ async def delete_knowledge_snapshot(
     return {'status': True}
 
 
-# Phase 8: Agent Workflow APIs
-
-from open_webui.models.knowledge import (
-    AgentWorkflow, AgentWorkflowStep,
-    AgentWorkflowCreateForm, AgentWorkflowExecuteForm,
-    AgentWorkflowModel, AGENT_ROLES, AGENT_ROLES_LIST,
-)
-
-
-@router.get('/workflows/roles')
-async def get_agent_roles(user=Depends(get_verified_user)):
-    """Get available agent roles."""
-    return AGENT_ROLES_LIST
-
-
-@router.get('/workflows', response_model=list[AgentWorkflowModel])
-async def list_workflows(user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
-    from sqlalchemy import select as sa_select
-    result = await db.execute(
-        sa_select(AgentWorkflow).where(AgentWorkflow.user_id == user.id).order_by(AgentWorkflow.updated_at.desc())
-    )
-    workflows = result.scalars().all()
-    out = []
-    for wf in workflows:
-        step_result = await db.execute(
-            sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index)
-        )
-        steps = [{'id': s.id, 'order_index': s.order_index, 'agent_role': s.agent_role,
-                  'knowledge_id': s.knowledge_id, 'prompt_template': s.prompt_template,
-                  'input_var': s.input_var, 'output_var': s.output_var}
-                 for s in step_result.scalars().all()]
-        out.append(AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=wf.name,
-                     description=wf.description, steps=steps,
-                     created_at=wf.created_at, updated_at=wf.updated_at))
-    return out
-
-
-@router.post('/workflows', response_model=AgentWorkflowModel)
-async def create_workflow(form_data: AgentWorkflowCreateForm, user=Depends(get_verified_user),
-                          db: AsyncSession = Depends(get_async_session)):
-    now = int(time.time())
-    wf = AgentWorkflow(id=str(uuid.uuid4()), user_id=user.id, name=form_data.name,
-                       description=form_data.description, created_at=now, updated_at=now)
-    db.add(wf)
-    for s in form_data.steps:
-        step = AgentWorkflowStep(id=str(uuid.uuid4()), workflow_id=wf.id,
-                                 order_index=s.get('order_index', 0), agent_role=s['agent_role'],
-                                 knowledge_id=s.get('knowledge_id'),
-                                 prompt_template=s.get('prompt_template'),
-                                 input_var=s.get('input_var'), output_var=s.get('output_var'),
-                                 created_at=now)
-        db.add(step)
-    await db.commit()
-    return AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=wf.name,
-                              description=wf.description, steps=form_data.steps,
-                              created_at=now, updated_at=now)
-
-
-@router.delete('/workflows/{workflow_id}')
-async def delete_workflow(workflow_id: str, user=Depends(get_verified_user),
-                          db: AsyncSession = Depends(get_async_session)):
-    from sqlalchemy import delete as sa_delete
-    await db.execute(sa_delete(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == workflow_id))
-    await db.execute(sa_delete(AgentWorkflow).where(AgentWorkflow.id == workflow_id, AgentWorkflow.user_id == user.id))
-    await db.commit()
-    return {'status': True}
-
-
-@router.post('/workflows/execute')
-async def execute_workflow(request: Request, form_data: AgentWorkflowExecuteForm,
-                           user=Depends(get_verified_user),
-                           db: AsyncSession = Depends(get_async_session)):
-    from sqlalchemy import select as sa_select
-    wf_result = await db.execute(sa_select(AgentWorkflow).where(AgentWorkflow.id == form_data.workflow_id))
-    wf = wf_result.scalars().first()
-    if not wf:
-        raise HTTPException(status_code=404, detail='Workflow not found')
-    step_result = await db.execute(
-        sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index)
-    )
-    steps = step_result.scalars().all()
-    if not steps:
-        raise HTTPException(status_code=400, detail='Workflow has no steps')
-
-    async def event_generator():
-        variables = {'query': form_data.query}
-        all_results = []
-        for step in steps:
-            role_info = AGENT_ROLES.get(step.agent_role, {'name': step.agent_role})
-            yield f"data: {json.dumps({'step': step.order_index, 'role': role_info['name'], 'status': 'running'})}\n\n"
-
-            kb_context = ''
-            if step.knowledge_id:
-                try:
-                    from open_webui.models.knowledge import Knowledges
-                    kb = await Knowledges.get_knowledge_by_id(step.knowledge_id, db=db)
-                    if kb:
-                        # Do a quick retrieval
-                        try:
-                            emb_fn = request.app.state.EMBEDDING_FUNCTION
-                            retrieval_result = await query_collection(
-                                request=request, collection_names=[step.knowledge_id],
-                                queries=[form_data.query], embedding_function=emb_fn, k=3,
-                            )
-                            if isinstance(retrieval_result, dict) and retrieval_result.get('documents'):
-                                docs = retrieval_result['documents'][0][:3]
-                                kb_context = '\n\n'.join(d[:500] for d in docs if d)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-            # Fill prompt template or use role default
-            prompt = step.prompt_template or role_info.get('default_prompt', '')
-            for var_name, var_value in variables.items():
-                prompt = prompt.replace(f'{{{var_name}}}', str(var_value))
-            prompt = prompt.replace('{context}', kb_context[:2000])
-            prompt = prompt.replace('{query}', form_data.query)
-
-            result_text = f"[{role_info['name']}] {prompt[:300]}"
-            if kb_context:
-                result_text += f"\n[检索到 {len(kb_context.split(chr(10)))} 条相关文档]"
-
-            if step.output_var:
-                variables[step.output_var] = result_text
-
-            all_results.append({'step': step.order_index, 'role': role_info['name'], 'output': result_text})
-            yield f"data: {json.dumps({'step': step.order_index, 'role': role_info['name'], 'status': 'completed', 'output': result_text[:200]})}\n\n"
-
-        yield f"data: {json.dumps({'status': 'done', 'all_results': all_results})}\n\n"
-
-    return StreamingResponse(event_generator(), media_type='text/event-stream')

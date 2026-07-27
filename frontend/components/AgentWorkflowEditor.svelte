@@ -35,13 +35,13 @@
 	// Load
 	async function loadWorkflows() {
 		try {
-			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/workflows`, { headers: { authorization: `Bearer ${$user?.token}` } });
+			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows`, { headers: { authorization: `Bearer ${$user?.token}` } });
 			if (res.ok) workflows = await res.json();
 		} catch (e) { console.error(e); }
 	}
 	async function loadRoles() {
 		try {
-			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/workflows/roles`, { headers: { authorization: `Bearer ${$user?.token}` } });
+			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows/roles`, { headers: { authorization: `Bearer ${$user?.token}` } });
 			if (res.ok) roles = await res.json();
 		} catch (e) { console.error(e); }
 	}
@@ -50,7 +50,7 @@
 	async function createWorkflow() {
 		try {
 			const body = { name: wfName, description: wfDesc, steps: wfSteps.map(s => ({ ...s, knowledge_id: s.knowledge_id || null })) };
-			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/workflows`, {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows`, {
 				method: 'POST', headers: { 'Content-Type': 'application/json', authorization: `Bearer ${$user?.token}` }, body: JSON.stringify(body)
 			});
 			if (!res.ok) throw await res.json();
@@ -63,7 +63,7 @@
 	// Delete
 	async function deleteWorkflow(id: string) {
 		if (!confirm('删除此工作流？')) return;
-		await fetch(`${WEBUI_API_BASE_URL}/knowledge/workflows/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${$user?.token}` } });
+		await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${$user?.token}` } });
 		toast.success('已删除');
 		await loadWorkflows();
 	}
@@ -74,7 +74,7 @@
 		const query = prompt('输入查询问题：', '什么是微服务架构？');
 		if (!query) { executing = false; return; }
 		try {
-			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/workflows/execute`, {
+			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows/exec`, {
 				method: 'POST', headers: { 'Content-Type': 'application/json', authorization: `Bearer ${$user?.token}` },
 				body: JSON.stringify({ query, workflow_id: wfId })
 			});
