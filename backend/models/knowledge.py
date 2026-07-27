@@ -1336,9 +1336,10 @@ class KnowledgeSnapshotCompareResult(BaseModel):
 
 
 class KnowledgeChunkPreviewForm(BaseModel):
-    """Request form for chunk preview - takes a file_id to preview chunking."""
+    """Request form for chunk preview - takes a file_id and optional chunking method."""
 
     file_id: str
+    method: str = 'general'
 
 
 class KnowledgeRelevanceAnnotationForm(BaseModel):
@@ -1362,15 +1363,72 @@ class KnowledgeSnapshotCompareForm(BaseModel):
     snapshot_b_id: str
 
 
-class KnowledgePromptUpdateForm(BaseModel):
-    """Form to update the RAG prompt template for a knowledge base."""
+# Phase 8: Agent Workflow Models
 
-    prompt_template: str
+AGENT_ROLES = {
+    'retriever': {'name': '检索员', 'icon': '🔍', 'default_prompt': '从知识库中检索与问题相关的文档内容。'},
+    'analyst': {'name': '分析员', 'icon': '🧠', 'default_prompt': '分析以下内容，提炼关键信息并给出见解。'},
+    'reporter': {'name': '汇报员', 'icon': '📝', 'default_prompt': '基于分析结果，生成结构化报告。'},
+    'validator': {'name': '校验员', 'icon': '✅', 'default_prompt': '验证以下结论是否与原文一致。'},
+    'translator': {'name': '翻译员', 'icon': '🌐', 'default_prompt': '将内容翻译为目标语言，保持原意。'},
+}
+
+AGENT_ROLES_LIST = [{'id': k, **v} for k, v in AGENT_ROLES.items()]
 
 
-DEFAULT_RAG_PROMPT_TEMPLATE = (
-    "You are a helpful AI assistant. Use the following reference materials to answer the user's question.\n\n"
-    "Reference Materials:\n{context}\n\n"
-    "User Question: {query}\n\n"
-    "If the reference materials do not contain relevant information, please say so honestly."
-)
+class AgentWorkflow(Base):
+    __tablename__ = 'agent_workflow'
+    id = Column(Text, unique=True, primary_key=True)
+    user_id = Column(Text, nullable=False)
+    name = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(BigInteger, nullable=False)
+    updated_at = Column(BigInteger, nullable=False)
+
+
+class AgentWorkflowStep(Base):
+    __tablename__ = 'agent_workflow_step'
+    id = Column(Text, unique=True, primary_key=True)
+    workflow_id = Column(Text, ForeignKey('agent_workflow.id', ondelete='CASCADE'), nullable=False)
+    order_index = Column(BigInteger, nullable=False)
+    agent_role = Column(Text, nullable=False)
+    knowledge_id = Column(Text, nullable=True)
+    prompt_template = Column(Text, nullable=True)
+    input_var = Column(Text, nullable=True)
+    output_var = Column(Text, nullable=True)
+    created_at = Column(BigInteger, nullable=False)
+
+
+class AgentWorkflowModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    user_id: str
+    name: str
+    description: Optional[str] = None
+    steps: list[dict] = []
+    created_at: int
+    updated_at: int
+
+
+class AgentWorkflowStepModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    workflow_id: str
+    order_index: int
+    agent_role: str
+    knowledge_id: Optional[str] = None
+    prompt_template: Optional[str] = None
+    input_var: Optional[str] = None
+    output_var: Optional[str] = None
+    created_at: int
+
+
+class AgentWorkflowCreateForm(BaseModel):
+    name: str
+    description: Optional[str] = None
+    steps: list[dict] = []
+
+
+class AgentWorkflowExecuteForm(BaseModel):
+    query: str
+    workflow_id: str

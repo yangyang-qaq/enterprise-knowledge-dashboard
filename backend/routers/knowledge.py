@@ -45,8 +45,6 @@ from open_webui.models.knowledge import (
     KnowledgeSnapshotCompareResult,
     KnowledgeSnapshotCreateForm,
     KnowledgeSnapshotModel,
-    KnowledgePromptUpdateForm,
-    DEFAULT_RAG_PROMPT_TEMPLATE,
     Knowledges,
     KnowledgeUserResponse,
 )
@@ -2452,6 +2450,55 @@ async def preview_knowledge_chunks(
     # Use existing loader + splitter (no embedding)
     try:
         file_path = await asyncio.to_thread(Storage.get_file, file_path)
+
+        method = form_data.method or 'general'
+
+        # ── Custom chunking strategies (Phase 7) ──
+        if method != 'general' and method != '':
+            # Read raw text from file
+            content = None
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                with open(file_path, 'r', encoding='gbk', errors='ignore') as f:
+                    content = f.read()
+
+            if not content:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Failed to read file content')
+
+            from open_webui.utils.chunking_strategies import chunk_document, extract_keywords, generate_questions
+            raw_chunks = chunk_document(content, method)
+
+            # Remove old chunks for this file
+            from sqlalchemy import delete as sa_delete
+            await db.execute(
+                sa_delete(KnowledgeChunk).where(
+                    KnowledgeChunk.knowledge_id == id,
+                    KnowledgeChunk.file_id == form_data.file_id,
+                )
+            )
+
+            import hashlib
+            now = int(time.time())
+            chunks = []
+            for idx, rc in enumerate(raw_chunks):
+                kw = extract_keywords(rc['content'])
+                qs = generate_questions(rc['content'])
+                content_hash = hashlib.sha256(rc['content'].encode()).hexdigest()
+                chunk = KnowledgeChunk(
+                    id=str(uuid.uuid4()), knowledge_id=id, file_id=form_data.file_id,
+                    chunk_index=idx, content=rc['content'],
+                    token_count=len(rc['content']) // 4, content_hash=content_hash,
+                    meta={**rc.get('metadata', {}), 'keywords': kw, 'questions': qs},
+                    created_at=now, updated_at=now,
+                )
+                db.add(chunk)
+                chunks.append(KnowledgeChunkModel.model_validate(chunk))
+            await db.commit()
+            return chunks
+
+        # ── Original LangChain pipeline for 'general' method ──
         loader_config = await get_loader_config()
         loader = build_loader_from_config(request, loader_config)
         loader.user = user
@@ -2653,24 +2700,21 @@ async def merge_knowledge_chunks(
     await db.execute(sa_delete(KnowledgeChunk).where(KnowledgeChunk.id.in_(old_ids)))
     db.add(merged_chunk)
 
-    # Rebuild chunk_index consecutively.
-    # Step 1: shift all to 10000+ (guaranteed no conflict with 0..N range)
-    from sqlalchemy import text as sa_text
-    await db.execute(
-        sa_text("UPDATE knowledge_chunk SET chunk_index = chunk_index + 10000 "
-                "WHERE knowledge_id = :kid AND file_id = :fid"),
-        {"kid": id, "fid": form_data.file_id},
-    )
-    await db.flush()
-    # Step 2: re-fetch and reassign 0,1,2... safely (all values >= 10000)
+    # Re-index chunks after the deleted range
     result = await db.execute(
         sa_select(KnowledgeChunk)
-        .where(KnowledgeChunk.knowledge_id == id, KnowledgeChunk.file_id == form_data.file_id)
+        .where(
+            KnowledgeChunk.knowledge_id == id,
+            KnowledgeChunk.file_id == form_data.file_id,
+            KnowledgeChunk.chunk_index > form_data.end_index,
+        )
         .order_by(KnowledgeChunk.chunk_index.asc())
     )
-    for i, c in enumerate(result.scalars().all()):
-        c.chunk_index = i
-        c.updated_at = now
+    trailing = result.scalars().all()
+    offset = form_data.end_index - form_data.start_index
+    for chunk in trailing:
+        chunk.chunk_index -= offset
+        chunk.updated_at = now
 
     await db.commit()
     return {'status': True, 'merged_chunk_id': merged_chunk.id}
@@ -2720,12 +2764,12 @@ async def split_knowledge_chunk(
     chunk.content_hash = hashlib.sha256(part_a.encode()).hexdigest()
     chunk.updated_at = now
 
-    # Create new chunk for part_b with a safe temp index
+    # Create new chunk for part_b
     new_chunk = KnowledgeChunk(
         id=str(uuid.uuid4()),
         knowledge_id=id,
         file_id=chunk.file_id,
-        chunk_index=-1,  # temp, will be renumbered below
+        chunk_index=chunk.chunk_index + 1,
         content=part_b,
         token_count=len(part_b) // 4,
         meta=(chunk.meta or {}).copy(),
@@ -2734,24 +2778,21 @@ async def split_knowledge_chunk(
         updated_at=now,
     )
     db.add(new_chunk)
-    await db.flush()
 
-    # Rebuild all chunk_index for this file (same safe approach as merge)
-    from sqlalchemy import text as sa_text
-    await db.execute(
-        sa_text("UPDATE knowledge_chunk SET chunk_index = chunk_index + 10000 "
-                "WHERE knowledge_id = :kid AND file_id = :fid"),
-        {"kid": id, "fid": chunk.file_id},
-    )
-    await db.flush()
+    # Shift trailing chunks
     result = await db.execute(
         sa_select(KnowledgeChunk)
-        .where(KnowledgeChunk.knowledge_id == id, KnowledgeChunk.file_id == chunk.file_id)
+        .where(
+            KnowledgeChunk.knowledge_id == id,
+            KnowledgeChunk.file_id == chunk.file_id,
+            KnowledgeChunk.chunk_index > chunk.chunk_index,
+        )
         .order_by(KnowledgeChunk.chunk_index.asc())
     )
-    for i, c in enumerate(result.scalars().all()):
-        c.chunk_index = i
-        c.updated_at = now
+    trailing = result.scalars().all()
+    for tc in trailing:
+        tc.chunk_index += 1
+        tc.updated_at = now
 
     await db.commit()
     return {'status': True, 'new_chunk_id': new_chunk.id}
@@ -3043,7 +3084,7 @@ async def evaluate_retrieval_query(
         for i in range(min(k, len(docs_list))):
             doc_text = docs_list[i] if i < len(docs_list) else ''
             results.append({
-                'chunk_id': metas_list[i].get('content_hash', f'chunk-{i}') if i < len(metas_list) else f'chunk-{i}',
+                'chunk_id': f'result-{i}-' + (metas_list[i].get('content_hash', '')[:8] if i < len(metas_list) else ''),
                 'text': doc_text[:500],
                 'score': dists_list[i] if i < len(dists_list) else None,
                 'metadata': metas_list[i] if i < len(metas_list) else {},
@@ -3440,57 +3481,135 @@ async def delete_knowledge_snapshot(
     return {'status': True}
 
 
-# ─────────────────────────────────────────────────────────────
-# Enterprise Knowledge Dashboard – Phase 6: Prompt Management
-# ─────────────────────────────────────────────────────────────
+# Phase 8: Agent Workflow APIs
+
+from open_webui.models.knowledge import (
+    AgentWorkflow, AgentWorkflowStep,
+    AgentWorkflowCreateForm, AgentWorkflowExecuteForm,
+    AgentWorkflowModel, AGENT_ROLES, AGENT_ROLES_LIST,
+)
 
 
-@router.get('/{id}/prompt')
-async def get_knowledge_prompt(
-    id: str,
-    user=Depends(get_verified_user),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Get the RAG prompt template for a knowledge base."""
-    knowledge = await Knowledges.get_knowledge_by_id(id, db=db)
-    if not knowledge:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
-
-    meta = knowledge.meta or {}
-    template = meta.get('rag_prompt_template', DEFAULT_RAG_PROMPT_TEMPLATE)
-    return {
-        'prompt_template': template,
-        'is_default': template == DEFAULT_RAG_PROMPT_TEMPLATE,
-        'available_vars': ['{query}', '{context}', '{kb_name}'],
-    }
+@router.get('/workflows/roles')
+async def get_agent_roles(user=Depends(get_verified_user)):
+    """Get available agent roles."""
+    return AGENT_ROLES_LIST
 
 
-@router.patch('/{id}/prompt')
-async def update_knowledge_prompt(
-    request: Request,
-    id: str,
-    form_data: KnowledgePromptUpdateForm,
-    user=Depends(get_verified_user),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Update the RAG prompt template for a knowledge base."""
-    knowledge = await Knowledges.get_knowledge_by_id(id, db=db)
-    if not knowledge:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
-
-    if not knowledge.user_id == user.id and user.role != 'admin':
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+@router.get('/workflows', response_model=list[AgentWorkflowModel])
+async def list_workflows(user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
+    from sqlalchemy import select as sa_select
+    result = await db.execute(
+        sa_select(AgentWorkflow).where(AgentWorkflow.user_id == user.id).order_by(AgentWorkflow.updated_at.desc())
+    )
+    workflows = result.scalars().all()
+    out = []
+    for wf in workflows:
+        step_result = await db.execute(
+            sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index)
         )
+        steps = [{'id': s.id, 'order_index': s.order_index, 'agent_role': s.agent_role,
+                  'knowledge_id': s.knowledge_id, 'prompt_template': s.prompt_template,
+                  'input_var': s.input_var, 'output_var': s.output_var}
+                 for s in step_result.scalars().all()]
+        out.append(AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=wf.name,
+                     description=wf.description, steps=steps,
+                     created_at=wf.created_at, updated_at=wf.updated_at))
+    return out
 
-    meta = dict(knowledge.meta or {})
-    meta['rag_prompt_template'] = form_data.prompt_template
-    updated = await Knowledges.update_knowledge_meta_by_id(id, meta, db=db)
-    if not updated:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Failed to update prompt')
 
-    return {
-        'status': True,
-        'prompt_template': form_data.prompt_template,
-    }
+@router.post('/workflows', response_model=AgentWorkflowModel)
+async def create_workflow(form_data: AgentWorkflowCreateForm, user=Depends(get_verified_user),
+                          db: AsyncSession = Depends(get_async_session)):
+    now = int(time.time())
+    wf = AgentWorkflow(id=str(uuid.uuid4()), user_id=user.id, name=form_data.name,
+                       description=form_data.description, created_at=now, updated_at=now)
+    db.add(wf)
+    for s in form_data.steps:
+        step = AgentWorkflowStep(id=str(uuid.uuid4()), workflow_id=wf.id,
+                                 order_index=s.get('order_index', 0), agent_role=s['agent_role'],
+                                 knowledge_id=s.get('knowledge_id'),
+                                 prompt_template=s.get('prompt_template'),
+                                 input_var=s.get('input_var'), output_var=s.get('output_var'),
+                                 created_at=now)
+        db.add(step)
+    await db.commit()
+    return AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=wf.name,
+                              description=wf.description, steps=form_data.steps,
+                              created_at=now, updated_at=now)
+
+
+@router.delete('/workflows/{workflow_id}')
+async def delete_workflow(workflow_id: str, user=Depends(get_verified_user),
+                          db: AsyncSession = Depends(get_async_session)):
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == workflow_id))
+    await db.execute(sa_delete(AgentWorkflow).where(AgentWorkflow.id == workflow_id, AgentWorkflow.user_id == user.id))
+    await db.commit()
+    return {'status': True}
+
+
+@router.post('/workflows/execute')
+async def execute_workflow(request: Request, form_data: AgentWorkflowExecuteForm,
+                           user=Depends(get_verified_user),
+                           db: AsyncSession = Depends(get_async_session)):
+    from sqlalchemy import select as sa_select
+    wf_result = await db.execute(sa_select(AgentWorkflow).where(AgentWorkflow.id == form_data.workflow_id))
+    wf = wf_result.scalars().first()
+    if not wf:
+        raise HTTPException(status_code=404, detail='Workflow not found')
+    step_result = await db.execute(
+        sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index)
+    )
+    steps = step_result.scalars().all()
+    if not steps:
+        raise HTTPException(status_code=400, detail='Workflow has no steps')
+
+    async def event_generator():
+        variables = {'query': form_data.query}
+        all_results = []
+        for step in steps:
+            role_info = AGENT_ROLES.get(step.agent_role, {'name': step.agent_role})
+            yield f"data: {json.dumps({'step': step.order_index, 'role': role_info['name'], 'status': 'running'})}\n\n"
+
+            kb_context = ''
+            if step.knowledge_id:
+                try:
+                    from open_webui.models.knowledge import Knowledges
+                    kb = await Knowledges.get_knowledge_by_id(step.knowledge_id, db=db)
+                    if kb:
+                        # Do a quick retrieval
+                        try:
+                            emb_fn = request.app.state.EMBEDDING_FUNCTION
+                            retrieval_result = await query_collection(
+                                request=request, collection_names=[step.knowledge_id],
+                                queries=[form_data.query], embedding_function=emb_fn, k=3,
+                            )
+                            if isinstance(retrieval_result, dict) and retrieval_result.get('documents'):
+                                docs = retrieval_result['documents'][0][:3]
+                                kb_context = '\n\n'.join(d[:500] for d in docs if d)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Fill prompt template or use role default
+            prompt = step.prompt_template or role_info.get('default_prompt', '')
+            for var_name, var_value in variables.items():
+                prompt = prompt.replace(f'{{{var_name}}}', str(var_value))
+            prompt = prompt.replace('{context}', kb_context[:2000])
+            prompt = prompt.replace('{query}', form_data.query)
+
+            result_text = f"[{role_info['name']}] {prompt[:300]}"
+            if kb_context:
+                result_text += f"\n[检索到 {len(kb_context.split(chr(10)))} 条相关文档]"
+
+            if step.output_var:
+                variables[step.output_var] = result_text
+
+            all_results.append({'step': step.order_index, 'role': role_info['name'], 'output': result_text})
+            yield f"data: {json.dumps({'step': step.order_index, 'role': role_info['name'], 'status': 'completed', 'output': result_text[:200]})}\n\n"
+
+        yield f"data: {json.dumps({'status': 'done', 'all_results': all_results})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type='text/event-stream')
