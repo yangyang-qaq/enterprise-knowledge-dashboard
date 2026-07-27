@@ -78,19 +78,13 @@
 				method: 'POST', headers: { 'Content-Type': 'application/json', authorization: `Bearer ${$user?.token}` },
 				body: JSON.stringify({ query, workflow_id: wfId })
 			});
-			const reader = res.body?.getReader();
-			const decoder = new TextDecoder();
-			while (reader) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				const text = decoder.decode(value);
-				for (const line of text.split('\n')) {
-					if (line.startsWith('data: ')) {
-						try { executionLog = [...executionLog, JSON.parse(line.slice(6))]; } catch (e) {}
-					}
-				}
+			if (!res.ok) throw await res.json();
+			const data = await res.json();
+			if (data.results) {
+				executionLog = data.results.map((r: any) => ({ role: r.role, status: 'completed', output: r.output }));
 			}
-		} catch (e: any) { toast.error(e?.message ?? '执行失败'); }
+			toast.success(`${data.results?.length || 0} steps completed`);
+		} catch (e: any) { toast.error(e?.detail ?? '执行失败'); }
 		executing = false;
 	}
 
