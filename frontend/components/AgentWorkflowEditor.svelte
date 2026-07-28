@@ -79,11 +79,27 @@
 				body: JSON.stringify({ query, workflow_id: wfId })
 			});
 			if (!res.ok) throw await res.json();
-			const data = await res.json();
-			if (data.results) {
-				executionLog = data.results.map((r: any) => ({ role: r.role, status: 'completed', output: r.output }));
+			const reader = res.body?.getReader();
+			const decoder = new TextDecoder();
+			if (reader) {
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					for (const line of decoder.decode(value).split('\n')) {
+						if (line.startsWith('data: ')) {
+							try {
+								const ev = JSON.parse(line.slice(6));
+								if (ev.status === 'done' && ev.results) {
+									executionLog = ev.results.map((r: any) => ({ role: r.role, status: r.status, output: r.output }));
+								} else {
+									executionLog = [...executionLog, ev];
+								}
+							} catch (e) {}
+						}
+					}
+				}
 			}
-			toast.success(`${data.results?.length || 0} steps completed`);
+			toast.success('执行完成');
 		} catch (e: any) { toast.error(e?.detail ?? '执行失败'); }
 		executing = false;
 	}

@@ -1367,8 +1367,8 @@ class KnowledgeSnapshotCompareForm(BaseModel):
 
 AGENT_ROLES = {
     'retriever': {'name': '检索员', 'icon': '🔍', 'default_prompt': '从知识库中检索与问题相关的文档内容。'},
-    'analyst': {'name': '分析员', 'icon': '🧠', 'default_prompt': '分析以下内容，提炼关键信息并给出见解。'},
-    'reporter': {'name': '汇报员', 'icon': '📝', 'default_prompt': '基于分析结果，生成结构化报告。'},
+    'analyst': {'name': '分析员', 'icon': '🧠', 'default_prompt': '请根据上面检索到的文档内容，提炼出与用户问题最相关的关键信息，并给出你的分析见解。只基于提供的文档内容回答，不要编造信息。'},
+    'reporter': {'name': '汇报员', 'icon': '📝', 'default_prompt': '请根据上面的分析结果，生成一份结构化的中文报告。格式要求：1.摘要 2.核心观点（逐条列出，标注引用来源）3.详细说明 4.参考文档列表。只基于提供的分析内容，不要编造信息。'},
     'validator': {'name': '校验员', 'icon': '✅', 'default_prompt': '验证以下结论是否与原文一致。'},
     'translator': {'name': '翻译员', 'icon': '🌐', 'default_prompt': '将内容翻译为目标语言，保持原意。'},
 }

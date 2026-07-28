@@ -1097,6 +1097,7 @@ async def create_workflow(request: Request, user=Depends(get_verified_user), db:
     return AgentWorkflowModel(id=wf.id, user_id=wf.user_id, name=n, description=d, steps=ss, created_at=now, updated_at=now)
 
 @router.post("/_workflows/exec")
+@router.post("/_workflows/exec")
 async def exec_workflow(request: Request, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
     from open_webui.models.knowledge import AgentWorkflow, AgentWorkflowStep, AGENT_ROLES
     from sqlalchemy import select as sa_select
@@ -1107,14 +1108,96 @@ async def exec_workflow(request: Request, user=Depends(get_verified_user), db: A
     sr = await db.execute(sa_select(AgentWorkflowStep).where(AgentWorkflowStep.workflow_id == wf.id).order_by(AgentWorkflowStep.order_index))
     steps = sr.scalars().all()
     results = []; variables = {"query": q}
-    for step in steps:
-        role_info = AGENT_ROLES.get(step.agent_role, {"name": step.agent_role})
-        prompt = step.prompt_template or role_info.get("default_prompt", "")
-        for vn, vv in variables.items(): prompt = prompt.replace("{" + vn + "}", str(vv))
-        output = "[" + role_info["name"] + "] " + prompt[:200]
-        if step.output_var: variables[step.output_var] = output
-        results.append({"step": step.order_index, "role": role_info["name"], "status": "ok", "output": output})
-    return {"status": "done", "results": results}
+    SSE = chr(10) + chr(10)
+    SEP = chr(10) + chr(10) + "---" + chr(10) + chr(10)
+
+    from dotenv import load_dotenv; load_dotenv(override=True); import os; OPENAI_API_BASE_URL = os.getenv("OPENAI_API_BASE_URL", "https://api.deepseek.com/v1"); OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    api_url = OPENAI_API_BASE_URL.rstrip("/") if OPENAI_API_BASE_URL else "https://api.deepseek.com/v1"
+    api_key = OPENAI_API_KEY or ""
+
+    async def event_generator():
+        for step in steps:
+            role_info = AGENT_ROLES.get(step.agent_role, {"name": step.agent_role})
+            yield "data: " + json.dumps({"step": step.order_index, "role": role_info["name"], "status": "running"}) + SSE
+            output = ""
+            if step.agent_role == "retriever" and step.knowledge_id:
+                try:
+                    emb_fn = request.app.state.EMBEDDING_FUNCTION
+                    from open_webui.retrieval.utils import query_collection
+                    r = await query_collection(request=request, collection_names=[step.knowledge_id], queries=[q], embedding_function=emb_fn, k=3)
+                    if isinstance(r, dict) and r.get("documents") and r["documents"][0]:
+                        docs = r["documents"][0][:3]
+                        metas = r.get("metadatas", [[]])[0][:3] if r.get("metadatas") else []
+                        output = "[Retrieved " + str(len(docs)) + " documents for query: " + q + "]" + chr(10) + chr(10)
+                        for i, doc in enumerate(docs):
+                            if not doc: continue
+                            # Get document source name
+                            src = "Unknown"
+                            if i < len(metas) and metas[i]:
+                                fid = metas[i].get("file_id", "")
+                            src = "Unknown"
+                            if fid:
+                                try:
+                                    from open_webui.models.files import Files
+                                    f = await Files.get_file_by_id(fid)
+                                    if f:
+                                        src = f.filename
+                                except Exception:
+                                    src = fid[:20]
+                            else:
+                                src = metas[i].get("name", metas[i].get("source", "Unknown"))
+                            output += chr(10) + "### Document " + str(i+1) + ": " + str(src) + chr(10)
+                            output += doc[:1500] + chr(10)
+                    else:
+                        output = "(no documents found in knowledge base)"
+                except Exception as e:
+                    output = "(retrieval error: " + str(e)[:100] + ")"
+            else:
+                try:
+                    prompt_text = step.prompt_template or role_info.get("default_prompt", "")
+                    # Collect ALL previous step outputs as context
+                    context_parts = []
+                    for vn, vv in variables.items():
+                        if vn != "query" and vv and isinstance(vv, str) and len(vv) > 5:
+                            context_parts.append("[" + vn + "]: " + str(vv)[:2000])
+                    prev_context = chr(10).join(context_parts) if context_parts else ""
+                    # Build final prompt with all available info
+                    if prev_context:
+                        prompt_text = "The following information was gathered from previous steps:"
+                        prompt_text += chr(10) + prev_context + chr(10) + chr(10)
+                        prompt_text += "Your task: " + role_info.get("default_prompt", "")
+                    else:
+                        prompt_text = "User question: " + q + chr(10) + chr(10) + prompt_text
+                    prompt_text = prompt_text.replace("{context}", prev_context)
+                    prompt_text = prompt_text.replace("{query}", q)
+                    for vn, vv in variables.items():
+                        prompt_text = prompt_text.replace("{" + vn + "}", str(vv)[:3000])
+                    if api_key:
+                        import httpx
+                        async with httpx.AsyncClient(timeout=60) as client:
+                            resp = await client.post(
+                                api_url + "/chat/completions",
+                                headers={"Authorization": "Bearer " + api_key},
+                                json={"model": "deepseek-chat", "messages": [
+                                    {"role": "system", "content": "You are the " + role_info["name"] + ". Respond in Chinese."},
+                                    {"role": "user", "content": prompt_text[:4000]}
+                                ], "max_tokens": 1024}
+                            )
+                            if resp.status_code == 200:
+                                output = resp.json()["choices"][0]["message"]["content"]
+                            else:
+                                output = "(LLM HTTP " + str(resp.status_code) + ")"
+                    else:
+                        output = "(No API key - would call " + role_info["name"] + ")"
+                except Exception as e:
+                    output = "(LLM error: " + str(e)[:150] + ")"
+            if step.output_var:
+                variables[step.output_var] = output
+            results.append({"step": step.order_index, "role": role_info["name"], "status": "done", "output": output[:600]})
+            yield "data: " + json.dumps({"step": step.order_index, "role": role_info["name"], "status": "done", "output": output[:400]}) + SSE
+        yield "data: " + json.dumps({"status": "done", "results": results}) + SSE
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 @router.delete("/_workflows/{wfid}")
 async def del_workflow(wfid: str, user=Depends(get_verified_user), db: AsyncSession = Depends(get_async_session)):
