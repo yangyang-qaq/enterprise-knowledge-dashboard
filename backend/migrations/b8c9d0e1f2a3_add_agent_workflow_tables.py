@@ -1,7 +1,7 @@
 """add agent workflow tables
 
 Revision ID: b8c9d0e1f2a3
-Revises: a7b8c9d0e1f2
+Revises: c9d03e6dd01f
 Create Date: 2026-07-22 00:00:00.000000
 
 """
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = 'b8c9d0e1f2a3'
-down_revision: Union[str, None] = 'a7b8c9d0e1f2'
+down_revision: Union[str, None] = 'c9d03e6dd01f'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

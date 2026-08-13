@@ -19,7 +19,11 @@
 	let workflows: Workflow[] = [];
 	let loaded = false;
 	let executing = false;
-	let executionLog: string[] = [];
+	let executionLog: any[] = [];
+	let execRunId = '';
+	let execWfName = '';
+	let execQuery = '';
+	let showDownload = false;
 
 	// Create/edit state
 	let showEditor = false;
@@ -69,10 +73,11 @@
 	}
 
 	// Execute
-	async function executeWorkflow(wfId: string) {
-		executing = true; executionLog = [];
+	async function executeWorkflow(wfId: string, wfName: string) {
+		executing = true; executionLog = []; execRunId = ''; execWfName = wfName; showDownload = false;
 		const query = prompt('输入查询问题：', '什么是微服务架构？');
 		if (!query) { executing = false; return; }
+		execQuery = query;
 		try {
 			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows/exec`, {
 				method: 'POST', headers: { 'Content-Type': 'application/json', authorization: `Bearer ${$user?.token}` },
@@ -90,8 +95,10 @@
 							try {
 								const ev = JSON.parse(line.slice(6));
 								if (ev.status === 'done' && ev.results) {
+									execRunId = ev.run_id || '';
 									executionLog = ev.results.map((r: any) => ({ role: r.role, status: r.status, output: r.output }));
-								} else {
+									showDownload = true;
+								} else if (ev.step !== undefined) {
 									executionLog = [...executionLog, ev];
 								}
 							} catch (e) {}
@@ -102,6 +109,26 @@
 			toast.success('执行完成');
 		} catch (e: any) { toast.error(e?.detail ?? '执行失败'); }
 		executing = false;
+	}
+
+	// Download Word document
+	async function downloadDocx() {
+		try {
+			const body: any = { run_id: execRunId, wf_name: execWfName, query: execQuery, steps: executionLog };
+			const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/_workflows/exec/download`, {
+				method: 'POST', headers: { 'Content-Type': 'application/json', authorization: `Bearer ${$user?.token}` },
+				body: JSON.stringify(body)
+			});
+			if (!res.ok) throw await res.json();
+			const blob = await res.blob();
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${execWfName}_report.docx`;
+			a.click();
+			URL.revokeObjectURL(url);
+			toast.success('Word 文档下载完成');
+		} catch (e: any) { toast.error(e?.detail ?? '下载失败'); }
 	}
 
 	onMount(() => { loadRoles(); loadWorkflows(); loaded = true; });
@@ -146,7 +173,7 @@
 								</div>
 							</div>
 							<div class="flex gap-1">
-								<button on:click={() => executeWorkflow(wf.id)} disabled={executing}
+								<button on:click={() => executeWorkflow(wf.id, wf.name)} disabled={executing}
 									class="px-2 py-1 text-xs rounded bg-green-100 hover:bg-green-200 dark:bg-green-900 dark:hover:bg-green-800 text-green-700">▶ 执行</button>
 								<button on:click={() => deleteWorkflow(wf.id)}
 									class="px-2 py-1 text-xs rounded bg-red-50 hover:bg-red-100 dark:bg-red-900/30 text-red-500">删除</button>
@@ -160,12 +187,20 @@
 		<!-- Execution Log -->
 		{#if executionLog.length > 0}
 			<div class="mt-4 p-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-				<h3 class="text-sm font-medium mb-2">执行日志</h3>
+				<div class="flex items-center justify-between mb-2">
+					<h3 class="text-sm font-medium">执行日志</h3>
+					{#if showDownload}
+						<button on:click={downloadDocx}
+							class="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 flex items-center gap-1">
+							📥 下载 Word 文档
+						</button>
+					{/if}
+				</div>
 				<div class="space-y-2">
 					{#each executionLog as log}
 						<div class="text-xs p-2 rounded bg-white dark:bg-gray-800">
 							<span class="font-medium">{log.role || log.status}</span>
-							{#if log.output}<div class="text-gray-500 mt-1">{log.output}</div>{/if}
+							{#if log.output}<div class="text-gray-500 mt-1 whitespace-pre-wrap">{log.output}</div>{/if}
 						</div>
 					{/each}
 				</div>
