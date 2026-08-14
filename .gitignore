@@ -3,3 +3,6 @@ __pycache__/
 .env
 node_modules/
 .svelte-kit/
+
+# 压测生成物
+reports/
