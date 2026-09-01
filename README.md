@@ -1,8 +1,5 @@
 # 企业级知识库管理后台 — Enterprise Knowledge Base Dashboard
 
-> 基于 [Open WebUI](https://github.com/open-webui/open-webui)（128K+ Stars）二次开发
->
-> **全 8 个 Phase 已完成** | 33 个 API | 7 张数据表 | 7 种分块策略 | 5 种 Agent 角色 | 24 个技术问题已解决
 
 ---
 
