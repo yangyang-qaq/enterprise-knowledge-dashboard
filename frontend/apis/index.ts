@@ -1401,3 +1401,248 @@ export const moveFileInKnowledge = async (
 
 	return res;
 };
+
+//////////////////////////////////
+// Phase 12: knowledge graph
+//////////////////////////////////
+
+export const buildKnowledgeGraph = async (
+	token: string,
+	id: string,
+	body: { force?: boolean; limit?: number | null; concurrency?: number | null } = {}
+) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/build`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({
+			force: body.force ?? false,
+			limit: body.limit ?? null,
+			concurrency: body.concurrency ?? null
+		})
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getKnowledgeGraphBuildStatus = async (token: string, id: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/build/status`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const cancelKnowledgeGraphBuild = async (token: string, id: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/build/cancel`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const retryFailedKnowledgeGraphChunks = async (token: string, id: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/build/retry-failed`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getKnowledgeGraphStats = async (token: string, id: string, checkStale = false) => {
+	let error = null;
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/stats?check_stale=${checkStale}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getKnowledgeGraph = async (token: string, id: string, minWeight = 1) => {
+	let error = null;
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/knowledge/${id}/graph?min_weight=${minWeight}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getKnowledgeGraphEntity = async (token: string, id: string, entityId: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/entities/${entityId}`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const searchKnowledgeGraph = async (
+	token: string,
+	id: string,
+	body: { query: string; k?: number }
+) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/graph/search`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({
+			query: body.query,
+			k: body.k ?? 3
+		})
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};

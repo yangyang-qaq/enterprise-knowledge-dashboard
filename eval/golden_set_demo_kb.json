@@ -1,0 +1,130 @@
+[
+  {
+    "id": "xd01",
+    "tier": "cross_doc",
+    "question": "这个项目向上游 Open WebUI 提交了哪两个 PR，分别修了什么问题？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md", "项目总结.md"],
+    "evidence": { "read.md": "27222", "项目总结.md": "27222" }
+  },
+  {
+    "id": "xd02",
+    "tier": "cross_doc",
+    "question": "整个二次开发一共新增了多少张数据库表、多少个 API 端点？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md", "项目总结.md"],
+    "evidence": { "read.md": "开发统计", "项目总结.md": "技术统计" }
+  },
+  {
+    "id": "xd03",
+    "tier": "cross_doc",
+    "question": "Phase 11 的生成质量门禁具体做了什么？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["项目总结.md", "开发文档.md"],
+    "evidence": { "项目总结.md": "Phase 11", "开发文档.md": "Phase 11" }
+  },
+  {
+    "id": "xd04",
+    "tier": "cross_doc",
+    "question": "知识库快照回滚时为什么文件恢复不了，最后加了什么按钮解决？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["开发文档.md", "问题记录.md"],
+    "evidence": { "开发文档.md": "delete_file", "问题记录.md": "delete_file" }
+  },
+  {
+    "id": "xd05",
+    "tier": "cross_doc",
+    "question": "ChromaDB 在多 worker 并发写入时出了什么问题，失败率多高？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["开发文档.md", "问题记录.md"],
+    "evidence": { "开发文档.md": "HNSW", "问题记录.md": "51.92" }
+  },
+  {
+    "id": "xd06",
+    "tier": "cross_doc",
+    "question": "检索质量评估面板会计算哪些指标？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md", "开发文档.md"],
+    "evidence": { "read.md": "recall", "开发文档.md": "recall" }
+  },
+  {
+    "id": "xd07",
+    "tier": "cross_doc",
+    "question": "多策略文档分块引擎用了什么中文分词技术，一共支持几种策略？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md", "项目总结.md", "开发文档.md"],
+    "evidence": { "read.md": "jieba", "项目总结.md": "jieba", "开发文档.md": "jieba" }
+  },
+  {
+    "id": "xd08",
+    "tier": "cross_doc",
+    "question": "SSE 进度推送在哪个 Phase 引入，用来解决什么问题？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md", "开发文档.md"],
+    "evidence": { "read.md": "SSE", "开发文档.md": "SSE" }
+  },
+  {
+    "id": "sd01",
+    "tier": "single_doc",
+    "question": "问题 17 记录的是什么问题，用什么方案解决的？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["问题记录.md"],
+    "evidence": { "问题记录.md": "问题 17" }
+  },
+  {
+    "id": "sd02",
+    "tier": "single_doc",
+    "question": "快照之间做差异对比调的是哪个 API？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["开发文档.md"],
+    "evidence": { "开发文档.md": "snapshots/compare" }
+  },
+  {
+    "id": "sd03",
+    "tier": "single_doc",
+    "question": "read.md 里的简历描述是怎么写这个项目的？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md"],
+    "evidence": { "read.md": "简历描述" }
+  },
+  {
+    "id": "sd04",
+    "tier": "single_doc",
+    "question": "项目预设了几种 Agent 角色？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["项目总结.md"],
+    "evidence": { "项目总结.md": "Agent 角色预设" }
+  },
+  {
+    "id": "sd05",
+    "tier": "single_doc",
+    "question": "Windows 上内嵌 Chroma 吃满提交内存导致 OpenBLAS 分配失败，是问题几？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["问题记录.md"],
+    "evidence": { "问题记录.md": "OpenBLAS" }
+  },
+  {
+    "id": "sd06",
+    "tier": "single_doc",
+    "question": "evaluate/query 这个接口是做什么的？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["开发文档.md"],
+    "evidence": { "开发文档.md": "evaluate/query" }
+  },
+  {
+    "id": "sd07",
+    "tier": "single_doc",
+    "question": "项目总共排查并解决了多少个技术问题？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["read.md"],
+    "evidence": { "read.md": "解决的问题" }
+  },
+  {
+    "id": "sd08",
+    "tier": "single_doc",
+    "question": "Phase 1 分块预览要解决用户什么痛点？",
+    "kb_id": "bfa8f7fa-3b8e-4181-a55d-addedd49bfc3",
+    "gold_files": ["开发文档.md"],
+    "evidence": { "开发文档.md": "Phase 1" }
+  }
+]

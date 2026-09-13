@@ -4,7 +4,17 @@
 
 **Author**: Guyang (yangyang-qaq)
 **Date**: 2026-07-21
-**Status**: Complete (All 6 phases implemented)
+**Status**: Complete for Phases 1–6. See the scope note below.
+
+> **Scope note.** This document was written at the end of Phase 6 and describes the
+> RAG observability/management layer as designed then. Phases 7–12 (multi-strategy
+> chunking, agent workflows, unit tests, load testing, faithfulness evaluation, and
+> the knowledge graph) were added afterwards and are documented in
+> [`开发文档.md`](开发文档.md) instead. Rather than back-fill this file halfway and
+> leave it internally inconsistent, the sections below are left as the Phase-1–6
+> record — with one deliberate exception: the graph-specific **Non-Goals** in §2 are
+> stated here, because "what this project refuses to do" belongs next to the goals
+> it refuses it in service of.
 
 ---
 
@@ -56,6 +66,7 @@ Open WebUI's knowledge base feature has a **black-box problem**:
 | G4 | Measure retrieval quality | Compute recall@K, precision@K, MRR from annotations |
 | G5 | Version control for KB state | Create, rollback, compare snapshots |
 | G6 | Per-KB prompt template configuration | Custom RAG prompts with variable substitution |
+| G7 | Cross-document recall via a knowledge graph | Multi-hop expansion surfaces chunks from other files; file-level recall must not regress |
 
 ### Non-Goals
 
@@ -63,6 +74,25 @@ Open WebUI's knowledge base feature has a **black-box problem**:
 - Multi-user collaborative annotation workflows
 - Automated chunk strategy optimization
 - Real-time collaborative editing of prompts
+
+Graph-specific non-goals (Phase 12). These are stated explicitly rather than left
+vague, because "graph RAG" is an overloaded term and half of it is a different project:
+
+- **Community detection** (Leiden / Louvain) — clustering entities into communities
+  answers "what are the themes of this corpus", which is a summarization question,
+  not a retrieval one.
+- **Global summarization** — precomputing a summary per community and answering from
+  that. Costly, and the failure mode is unverifiable prose rather than a wrong citation.
+- **GraphRAG-style global search** — routing a whole-corpus question through community
+  summaries instead of chunk retrieval.
+- **LLM reasoning over the graph** — letting the model traverse the graph itself. The
+  traversal is deterministic BFS with a degree cap; keeping it deterministic is what
+  makes the retrieval path debuggable.
+
+What Phase 12 *does* do is local search only: seed chunks → their entities → walk 1–2
+hops → recall the chunks those entities appear in → merge. That is one coherent
+technique; mixing in the four above would triple the cost and leave two half-finished
+stories instead of one finished one.
 
 ---
 

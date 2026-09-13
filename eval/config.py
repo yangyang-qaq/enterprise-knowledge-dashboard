@@ -26,6 +26,17 @@ EVAL_USER_PASSWORD = os.getenv("EVAL_USER_PASSWORD", "")
 # golden_set 条目未单独给 kb_id 时的兜底 KB id
 DEFAULT_KB_ID = os.getenv("EVAL_KB_ID", "")
 
+# ── 图谱检索 A/B（Phase 12 S7）──
+# 文件级召回评测的默认 K。**刻意不用 RETRIEVAL_K=10**：只有 4~6 个文档的语料上，
+# base 臂在 k>=5 就基本覆盖全集，文件级 recall 已到天花板，图再加新文件也涨不动，
+# Δ 必然为 0 —— 那是指标饱和，不是图谱没生效。小 K（1~3）才是有区分度的区间。
+GRAPH_EVAL_K = int(os.getenv("EVAL_GRAPH_K", "3"))
+# 回归门容差：graph 的 recall@K 低于 base 超过这个值才判失败
+REGRESSION_TOLERANCE = float(os.getenv("EVAL_REGRESSION_TOLERANCE", "0.02"))
+# 灵敏度检查用 `--set-config GRAPH_HOPS=2` 临时改后端配置，跑完自动还原 ——
+# 故意不在这里放一个 GRAPH_HOPS 默认值：脚本内部改参数证明不了「评测能感知
+# 真实参数变化」，必须打到后端配置上才算数。
+
 # ── 路径 ──
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GOLDEN_SET_PATH = os.path.join(BASE_DIR, "golden_set.json")

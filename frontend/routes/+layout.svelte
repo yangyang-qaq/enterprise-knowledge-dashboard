@@ -21,6 +21,7 @@
 		else if (path.endsWith('/faithfulness')) activeTab = 'faithfulness';
 		else if (path.endsWith('/snapshots')) activeTab = 'snapshots';
 		else if (path.endsWith('/agents')) activeTab = 'agents';
+		else if (path.endsWith('/graph')) activeTab = 'graph';
 		else activeTab = 'files';
 	}
 </script>
@@ -84,6 +85,14 @@
 			>
 				🤖 Agents
 			</button>
+		<button
+			on:click={() => navigateTo('graph')}
+			class="px-4 py-2 text-sm font-medium rounded-t-lg transition {activeTab === 'graph'
+				? 'bg-white dark:bg-gray-900 text-blue-600 dark:text-blue-400 border-b-2 border-blue-600'
+				: 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}"
+		>
+			🕸️ 图谱
+		</button>
 	</div>
 
 	<!-- Page Content -->

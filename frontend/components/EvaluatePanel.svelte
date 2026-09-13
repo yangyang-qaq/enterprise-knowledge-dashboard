@@ -42,6 +42,10 @@
 	let k = 10;
 	let searching = false;
 	let annotating = false;
+	// Follows rag.enable_graph_retrieval by default; pinning it here is what makes
+	// the A/B usable -- the backend treats an explicit value as an override of the
+	// global config, so both arms can be forced regardless of the global default.
+	let useGraph: boolean | null = null;
 
 	let results: SearchResult[] = [];
 	let metrics: Metrics | null = null;
@@ -106,7 +110,7 @@
 					'Content-Type': 'application/json',
 					authorization: `Bearer ${$user?.token}`
 				},
-				body: JSON.stringify({ query: query.trim(), k })
+				body: JSON.stringify({ query: query.trim(), k, use_graph: useGraph })
 			});
 			if (!res.ok) throw await res.json();
 			const data = await res.json();
@@ -290,6 +294,15 @@
 				<option value="10">K=10</option>
 				<option value="20">K=20</option>
 			</select>
+			<select
+				bind:value={useGraph}
+				class="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-2 text-sm"
+				title="图谱扩展召回开关：默认跟随全局配置，这里可强制开/关做 A/B"
+			>
+				<option value={null}>图谱:跟随配置</option>
+				<option value={false}>图谱:关</option>
+				<option value={true}>图谱:开</option>
+			</select>
 			<button
 				on:click={runQuery}
 				disabled={searching || !query.trim()}
@@ -353,6 +366,14 @@
 										<span class="text-xs font-mono {scoreColor(result.score)}">
 											score: {result.score?.toFixed(4) ?? 'N/A'}
 										</span>
+										{#if result.metadata?.graph}
+											<span
+												class="text-xs px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+												title="由图谱多跳扩展召回（{result.metadata.graph.hops} 跳，命中 {result.metadata.graph.entity_hits} 个实体）"
+											>
+												图谱召回
+											</span>
+										{/if}
 									</div>
 									<div class="text-sm text-gray-700 dark:text-gray-300 line-clamp-3">
 										{result.text?.substring(0, 300)}

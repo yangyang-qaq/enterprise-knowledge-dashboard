@@ -1354,6 +1354,17 @@ class KnowledgeEvaluateQueryForm(BaseModel):
 
     query: str
     k: int = 10
+    # None = follow rag.enable_graph_retrieval; True/False force it for this call.
+    # The A/B eval relies on this being an explicit tri-state: forcing False has to
+    # be able to override a globally-enabled default, or the baseline arm of the
+    # comparison would silently include graph results.
+    use_graph: bool | None = None
+
+
+class KnowledgePromptForm(BaseModel):
+    """Form to update the KB-level RAG prompt template."""
+
+    prompt_template: str
 
 
 class KnowledgeSnapshotCompareForm(BaseModel):
@@ -1432,3 +1443,245 @@ class AgentWorkflowCreateForm(BaseModel):
 class AgentWorkflowExecuteForm(BaseModel):
     query: str
     workflow_id: str
+
+
+####################
+# Knowledge Graph Tables (Phase 12: Graph-Enhanced RAG)
+####################
+
+
+class KnowledgeGraphEntity(Base):
+    """Graph node. One row per surface form.
+
+    Rows whose ``canonical_id`` is NULL are canonical nodes and are the only
+    ones that participate in traversal or rendering. Rows pointing at another
+    row are alias shadows kept so that the original wording stays visible and
+    merges stay reversible.
+    """
+
+    __tablename__ = 'knowledge_graph_entity'
+
+    id = Column(Text, unique=True, primary_key=True)
+    knowledge_id = Column(Text, ForeignKey('knowledge.id', ondelete='CASCADE'), nullable=False)
+    name = Column(Text, nullable=False)
+    name_key = Column(Text, nullable=False)  # NFKC-normalised, dedup key
+    canonical_id = Column(Text, ForeignKey('knowledge_graph_entity.id', ondelete='SET NULL'), nullable=True)
+    entity_type = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    aliases = Column(JSON, nullable=True)
+    chunk_hashes = Column(JSON, nullable=True)  # derived cache for rendering; authoritative source is knowledge_graph_chunk_entity
+    mention_count = Column(BigInteger, nullable=False, default=0)
+    degree = Column(BigInteger, nullable=False, default=0)  # backfilled at end of build; drives hub pruning
+
+    created_at = Column(BigInteger, nullable=False)
+    updated_at = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('knowledge_id', 'name_key', name='uq_knowledge_graph_entity_kb_name_key'),
+        Index('ix_knowledge_graph_entity_knowledge_id', 'knowledge_id'),
+        Index('ix_knowledge_graph_entity_canonical_id', 'canonical_id'),
+        Index('ix_knowledge_graph_entity_degree', 'knowledge_id', 'degree'),
+    )
+
+
+class KnowledgeGraphEntityModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    knowledge_id: str
+    name: str
+    name_key: str
+    canonical_id: Optional[str] = None
+    entity_type: Optional[str] = None
+    description: Optional[str] = None
+    aliases: Optional[list] = None
+    chunk_hashes: Optional[list] = None
+    mention_count: int
+    degree: int
+    created_at: int
+    updated_at: int
+
+
+class KnowledgeGraphEdge(Base):
+    """Merged triple. One row per (source, target, relation_key).
+
+    The same triple extracted from five chunks collapses into a single row with
+    ``weight=5`` and five entries in ``evidence_chunk_hashes`` - which answers
+    both "how do repeated mentions merge" and "which chunk backs this edge".
+    """
+
+    __tablename__ = 'knowledge_graph_edge'
+
+    id = Column(Text, unique=True, primary_key=True)
+    knowledge_id = Column(Text, ForeignKey('knowledge.id', ondelete='CASCADE'), nullable=False)
+    source_entity_id = Column(Text, ForeignKey('knowledge_graph_entity.id', ondelete='CASCADE'), nullable=False)
+    target_entity_id = Column(Text, ForeignKey('knowledge_graph_entity.id', ondelete='CASCADE'), nullable=False)
+    relation = Column(Text, nullable=False)
+    relation_key = Column(Text, nullable=False)  # normalised into the closed set
+    evidence_chunk_hashes = Column(JSON, nullable=True)
+    evidence_file_ids = Column(JSON, nullable=True)
+    weight = Column(BigInteger, nullable=False, default=1)
+    is_cross_doc = Column(BigInteger, nullable=False, default=0)  # 1 when evidence spans >1 file
+    confidence = Column(BigInteger, nullable=True)  # 0-100 int, not Float, to keep SQLite/PG behaviour identical
+
+    created_at = Column(BigInteger, nullable=False)
+    updated_at = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'knowledge_id',
+            'source_entity_id',
+            'target_entity_id',
+            'relation_key',
+            name='uq_knowledge_graph_edge_triple',
+        ),
+        Index('ix_knowledge_graph_edge_knowledge_id', 'knowledge_id'),
+        Index('ix_knowledge_graph_edge_source', 'knowledge_id', 'source_entity_id'),
+        Index('ix_knowledge_graph_edge_target', 'knowledge_id', 'target_entity_id'),
+    )
+
+
+class KnowledgeGraphEdgeModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    knowledge_id: str
+    source_entity_id: str
+    target_entity_id: str
+    relation: str
+    relation_key: str
+    evidence_chunk_hashes: Optional[list] = None
+    evidence_file_ids: Optional[list] = None
+    weight: int
+    is_cross_doc: int
+    confidence: Optional[int] = None
+    created_at: int
+    updated_at: int
+
+
+class KnowledgeGraphChunkEntity(Base):
+    """chunk <-> entity many-to-many.
+
+    ``chunk_hash`` is ``sha256(chunk text)`` - the very same value retrieval
+    surfaces as ``metadata['_chunk_hash']``, so the join needs no write-path
+    changes.
+
+    Deliberately no FK to ``knowledge_chunk``: that hash is a content digest
+    rather than a primary key, and that table may legitimately be empty.
+    """
+
+    __tablename__ = 'knowledge_graph_chunk_entity'
+
+    id = Column(Text, unique=True, primary_key=True)
+    knowledge_id = Column(Text, ForeignKey('knowledge.id', ondelete='CASCADE'), nullable=False)
+    chunk_hash = Column(Text, nullable=False)
+    entity_id = Column(Text, ForeignKey('knowledge_graph_entity.id', ondelete='CASCADE'), nullable=False)
+    file_id = Column(Text, nullable=True)
+    chunk_index = Column(BigInteger, nullable=True)  # best-effort, often NULL
+
+    created_at = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('knowledge_id', 'chunk_hash', 'entity_id', name='uq_knowledge_graph_chunk_entity'),
+        Index('ix_knowledge_graph_chunk_entity_entity', 'knowledge_id', 'entity_id'),
+        Index('ix_knowledge_graph_chunk_entity_chunk', 'knowledge_id', 'chunk_hash'),
+    )
+
+
+class KnowledgeGraphChunkEntityModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    knowledge_id: str
+    chunk_hash: str
+    entity_id: str
+    file_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    created_at: int
+
+
+class KnowledgeGraphExtractionTask(Base):
+    """Build job progress, mirroring KnowledgeProcessingTask."""
+
+    __tablename__ = 'knowledge_graph_extraction_task'
+
+    id = Column(Text, unique=True, primary_key=True)
+    knowledge_id = Column(Text, ForeignKey('knowledge.id', ondelete='CASCADE'), nullable=False)
+    status = Column(Text, nullable=False)  # 'pending' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
+    total_chunks = Column(BigInteger, nullable=False, default=0)
+    processed_chunks = Column(BigInteger, nullable=False, default=0)
+    failed_chunks = Column(BigInteger, nullable=False, default=0)
+    skipped_chunks = Column(BigInteger, nullable=False, default=0)
+    entity_count = Column(BigInteger, nullable=False, default=0)
+    edge_count = Column(BigInteger, nullable=False, default=0)
+    model = Column(Text, nullable=True)
+    concurrency = Column(BigInteger, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(BigInteger, nullable=False)
+    updated_at = Column(BigInteger, nullable=False)
+
+    __table_args__ = (Index('ix_knowledge_graph_task_knowledge_id', 'knowledge_id'),)
+
+
+class KnowledgeGraphExtractionTaskModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    knowledge_id: str
+    status: str
+    total_chunks: int
+    processed_chunks: int
+    failed_chunks: int
+    skipped_chunks: int
+    entity_count: int
+    edge_count: int
+    model: Optional[str] = None
+    concurrency: Optional[int] = None
+    error_message: Optional[str] = None
+    created_at: int
+    updated_at: int
+
+
+class KnowledgeGraphExtractionLog(Base):
+    """Per-chunk ledger - the sole basis for incremental reconciliation.
+
+    Build diffs live chunk hashes against rows marked 'ok' here, so re-running
+    only pays for new or edited chunks.
+    """
+
+    __tablename__ = 'knowledge_graph_extraction_log'
+
+    id = Column(Text, unique=True, primary_key=True)
+    knowledge_id = Column(Text, ForeignKey('knowledge.id', ondelete='CASCADE'), nullable=False)
+    chunk_hash = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)  # 'ok' | 'failed' | 'skipped'
+    error_message = Column(Text, nullable=True)
+    entity_count = Column(BigInteger, nullable=False, default=0)
+    edge_count = Column(BigInteger, nullable=False, default=0)
+
+    extracted_at = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('knowledge_id', 'chunk_hash', name='uq_knowledge_graph_extraction_log_chunk'),
+        Index('ix_knowledge_graph_extraction_log_knowledge_id', 'knowledge_id'),
+    )
+
+
+class KnowledgeGraphBuildForm(BaseModel):
+    force: bool = False
+    concurrency: Optional[int] = None
+    limit: Optional[int] = None
+
+
+class KnowledgeGraphSearchForm(BaseModel):
+    query: str
+    k: int = 10
+    hops: Optional[int] = None
+    use_graph: Optional[bool] = None  # None = follow rag.enable_graph_retrieval
+    merge_mode: Optional[str] = None
+
+
+class KnowledgeGraphMergeForm(BaseModel):
+    source_ids: list[str]
+    target_id: str

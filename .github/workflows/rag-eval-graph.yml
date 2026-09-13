@@ -1,0 +1,66 @@
+name: RAG Graph Retrieval Eval
+
+# 知识图谱扩展召回的 A/B 回归门（Phase 12）。
+#
+# 这个 workflow 断言的不是「图谱有提升」，而是「图谱没有把召回搞差」——
+# 别把这两件事混起来。在 4 文档 demo KB 上实测：file-level recall@K 的 Δ 恒为
+# 0.0000（base 与 graph 完全一致），因为图谱只是把候选池扩大 2 个 chunk，而
+# append 融合模式保证 base 的顺序原封不动。所以「Δ > 0」不是这条门禁的预期，
+# 一旦有人把融合模式改回 rerank 或把 graph_bonus 调大，Δ 会转负，门禁就会红——
+# 这正是它存在的意义。
+#
+# 需要自托管 runner：要有一个跑着后端(127.0.0.1:8080)且目标 KB 已经建好图谱的
+# 环境。跟 rag-eval-full.yml 同款依赖。
+
+on:
+  pull_request:
+    paths:
+      - 'eval/**'
+      - 'backend/retrieval/**'
+      - 'backend/routers/knowledge_graph.py'
+  workflow_dispatch:
+
+jobs:
+  graph-retrieval:
+    # 自托管：需要后端在 127.0.0.1:8080 运行，且目标 KB 的图谱已构建
+    runs-on: [self-hosted]
+    defaults:
+      run:
+        working-directory: eval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # 先验 ground truth 本身。黄金集里每条 evidence 子串必须真的出现在它声明的
+      # 文件里，cross_doc 档必须真的 >= 2 个文件——否则测的是一个错误的标准，
+      # 后面 Δ 再好看也没有意义。这一步不能省。
+      - name: Verify golden set
+        env:
+          OWUI_BASE_URL: http://127.0.0.1:8080
+          EVAL_TOKEN: ${{ secrets.EVAL_TOKEN }}
+          EVAL_USER_EMAIL: ${{ secrets.EVAL_USER_EMAIL }}
+          EVAL_USER_PASSWORD: ${{ secrets.EVAL_USER_PASSWORD }}
+          EVAL_KB_ID: ${{ vars.EVAL_KB_ID }}
+        run: python retrieval_eval.py --verify-golden-set --kb-id "$EVAL_KB_ID"
+
+      # 回归门：跨文档子集 Δ 低于 -容差 则退出码 1。
+      - name: Run graph A/B regression gate
+        env:
+          OWUI_BASE_URL: http://127.0.0.1:8080
+          EVAL_TOKEN: ${{ secrets.EVAL_TOKEN }}
+          EVAL_USER_EMAIL: ${{ secrets.EVAL_USER_EMAIL }}
+          EVAL_USER_PASSWORD: ${{ secrets.EVAL_USER_PASSWORD }}
+          EVAL_KB_ID: ${{ vars.EVAL_KB_ID }}
+          EVAL_GRAPH_K: ${{ vars.EVAL_GRAPH_K || '3' }}
+        run: python retrieval_eval.py --compare --kb-id "$EVAL_KB_ID"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graph-retrieval-report
+          path: eval/reports/retrieval-graph-*.md

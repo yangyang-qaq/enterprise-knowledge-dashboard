@@ -858,7 +858,6 @@ async def apply_source_context_to_messages(
                     if kb and kb.meta:
                         custom_tpl = kb.meta.get('rag_prompt_template')
                         if custom_tpl:
-                            # Convert {query}/{context}/{kb_name} to [query]/[context]
                             custom_tpl = custom_tpl.replace('{query}', '[query]')
                             custom_tpl = custom_tpl.replace('{context}', '[context]')
                             custom_tpl = custom_tpl.replace('{kb_name}', kb.name)

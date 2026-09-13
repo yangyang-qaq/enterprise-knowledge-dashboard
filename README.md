@@ -2,7 +2,7 @@
 
 > 基于 [Open WebUI](https://github.com/open-webui/open-webui)（128K+ Stars）二次开发
 >
-> **全 11 个 Phase 已完成** | 33+ 个 API | 7 张数据表 | 7 种分块策略 | 5 种 Agent 角色（编排式 + 自主式 LangChain Agent） | 32 个技术问题已解决
+> **全 12 个 Phase 已完成** | 39 个 API | 12 张数据表 | 7 种分块策略 | 5 种 Agent 角色（编排式 + 自主式 LangChain Agent） | 知识图谱扩展召回 | 41 个技术问题已解决
 
 ---
 
@@ -20,6 +20,7 @@
 | 🔪 **多策略分块** | 7 种算法 + jieba 关键词 + 问题生成 | 按文档类型自适应分块 |
 | 🤖 **Agent 工作流** | 多 Agent 协作 / 真实 LLM 调用 / Word 报告下载 | 检索→分析→汇报→校验，全链路可编排 |
 | ⚙️ **自主式 Agent** | LangGraph function-calling，5 角色即工具 | 模型自主决定调用顺序与轮数，与编排式一键切换，SSE 逐步轨迹 + 结论 |
+| 🕸️ **知识图谱召回** | LLM 抽三元组建图（5 张表）+ 多跳游走融合 | 答案需要跨文档拼出来时，单轮向量检索召回不全的补充手段 |
 
 ---
 
@@ -28,16 +29,16 @@
 ```
 ┌──────────────────────────────────────────────────────┐
 │              浏览器 (SvelteKit + TypeScript)           │
-│  6-Tab 导航: Files │ Chunks │ Processing │ Evaluate   │
-│              Snapshots │ Agents                       │
+│  8-Tab 导航: Files │ Chunks │ Processing │ Evaluate   │
+│   Faithfulness │ Snapshots │ Agents │ Graph           │
 ├──────────────────────────────────────────────────────┤
 │                 FastAPI 异步后端                        │
 │  Knowledge Router │ Retrieval Router │ Chat Middleware │
-│  33 个新增端点      │ 7 种分块策略       │ Prompt 模板注入 │
+│  39 个新增端点      │ 7 种分块策略       │ Prompt 模板注入 │
 │        │                    │                         │
 │   ┌────┴────┐  ┌──────────┐  ┌──────────────────┐   │
 │   │ SQLite  │  │ ChromaDB │  │  DeepSeek API     │   │
-│   │(7 张新表)│  │ (向量存储) │  │  (LLM 推理)       │   │
+│   │(12 张新表)│  │ (向量存储) │  │  (LLM 推理)       │   │
 │   └─────────┘  └──────────┘  └──────────────────┘   │
 └──────────────────────────────────────────────────────┘
 ```
@@ -101,7 +102,7 @@
 
 ---
 
-## 数据库设计（7 张新表）
+## 数据库设计（12 张新表）
 
 | 表名 | 用途 | 关键字段 |
 |---|---|---|
@@ -112,19 +113,26 @@
 | `knowledge_snapshot` | 版本快照 | label, file_count, snapshot_data(JSON) |
 | `agent_workflow` | 工作流定义 | name, description, user_id |
 | `agent_workflow_step` | 工作流步骤 | workflow_id, order_index, agent_role, knowledge_id, prompt_template, output_var |
+| `knowledge_graph_entity` | 图谱实体节点 | name, name_key(归一化), canonical_id(别名指针), entity_type, degree, mention_count |
+| `knowledge_graph_edge` | 图谱三元组边 | source/target_entity_id, relation_key(闭合集合), weight, is_cross_doc, confidence |
+| `knowledge_graph_chunk_entity` | chunk↔实体多对多 | chunk_hash, entity_id, file_id |
+| `knowledge_graph_extraction_task` | 建图作业进度 | status, total_chunks, processed_chunks, entity_count, edge_count |
+| `knowledge_graph_extraction_log` | 每 chunk 抽取台账（增量唯一依据） | chunk_hash, status(ok/failed/skipped), entity_count, edge_count |
 
 ---
 
-## API 端点（33 个）
+## API 端点（39 个）
 
 ### 分块管理
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/{id}/chunks/preview` | 预览分块结果（支持 method 参数选策略） |
 | `GET` | `/{id}/files/{fileId}/chunks` | 查看某文件所有分块 |
+| `GET` | `/{id}/chunks/{chunk_id}` | 查看单个分块 |
 | `POST` | `/{id}/chunks/merge` | 合并相邻分块（+10000 偏移解决 UNIQUE 冲突） |
 | `POST` | `/{id}/chunks/split` | 拆分分块 |
 | `POST` | `/{id}/chunks/reindex` | 重建向量索引 |
+| `POST` | `/{id}/chunks/ai-refine` | LLM 辅助精修分块内容 |
 
 ### 进度监控
 | Method | Path | Description |
@@ -140,12 +148,14 @@
 | `POST` | `/{id}/evaluate/annotate` | 标注相关/不相关 |
 | `GET` | `/{id}/evaluate/judgments` | 查看标注列表 |
 | `DELETE` | `/{id}/evaluate/judgments/{q}` | 删除标注 |
+| `POST` | `/{id}/evaluate/faithfulness` | 对检索结果跑 Faithfulness 忠实度判定 |
 
 ### 快照管理
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/{id}/snapshots` | 创建快照 |
 | `GET` | `/{id}/snapshots` | 快照列表 |
+| `GET` | `/{id}/snapshots/{sid}` | 查看快照详情 |
 | `POST` | `/{id}/snapshots/{sid}/rollback` | 回滚 |
 | `POST` | `/{id}/snapshots/compare` | 差异对比 |
 | `DELETE` | `/{id}/snapshots/{sid}` | 删除快照 |
@@ -170,6 +180,19 @@
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/_agents/autonomous/exec` | 自主式 LangChain Agent 执行（SSE 流式：round/observation/answer/done） |
+
+### 知识图谱（Phase 12）
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/{id}/graph/build` | 建图：立即返回 task_id，后台批处理抽三元组 |
+| `GET` | `/{id}/graph/build/status` | 建图进度 + `retrieval_ready`（未开混检/重排时给出原因） |
+| `GET` | `/{id}/graph/build/stream` | SSE 推送建图进度 |
+| `POST` | `/{id}/graph/build/cancel` | 取消建图 |
+| `POST` | `/{id}/graph/build/retry-failed` | 重试失败的 chunk |
+| `GET` | `/{id}/graph` | 节点 + 边（供前端画布渲染） |
+| `GET` | `/{id}/graph/stats` | 实体/边/跨文档边/覆盖率/关系类型分布 |
+| `GET` | `/{id}/graph/entities/{eid}` | 实体详情 + 邻居 + 关联 chunk 列表 |
+| `POST` | `/{id}/graph/search` | 对比检索：base / graph 两臂 + `distinct_files` 变化 |
 
 ---
 
@@ -197,18 +220,28 @@
 | Alembic 多头冲突 | 更新 down_revision 指向合并版本 |
 | chunk_id 重复导致 Svelte each_key_duplicate | `result-{i}-{hash[:8]}` 组合唯一 ID |
 
-> 详见 [问题记录.md](问题记录.md)（24 个问题完整记录）
+> 详见 [问题记录.md](问题记录.md)（41 个问题完整记录）
 
 ---
 
 ## 快速启动
 
-```bash
-# 1. 合并代码到 Open WebUI 项目
-# backend/  → open-webui/backend/open_webui/
-# frontend/ → open-webui/src/
+> ⚠️ **下面的命令要在「同时放着本仓库和 Open WebUI 的那一级目录」下执行**——
+> 第 2 步的 `cd open-webui` 需要旁边真的有 `open-webui/`。本仓库自身不含
+> `open-webui/`，所以从本仓库目录里直接跑第 2 步会失败。
+>
+> ⚠️ 本仓库是**扁平镜像**，不是可直接覆盖的目录树：`backend/utils/xxx.py` 对应
+> `open-webui/backend/open_webui/utils/xxx.py`，`frontend/components/*.svelte`
+> 对应 `open-webui/src/lib/components/workspace/Knowledge/*.svelte`。完整的
+> 一一对应关系在 `scripts/sync_backend.sh` 的 MAP 表里（该脚本负责双向核对）。
 
-# 2. 安装依赖并构建前端
+```bash
+# 1. 按上面的对应关系把代码放回 Open WebUI 项目
+#    （推荐直接用同步脚本，别手工拷）
+#    scripts/sync_backend.sh check    # 先看两边的差异
+#    scripts/sync_backend.sh apply    # 从 Open WebUI 同步到本仓库
+
+# 2. 安装依赖并构建前端（在「同时放着两个仓库的那一级目录」下执行）
 cd open-webui
 npm install --engine-strict=false
 npm run build
@@ -228,14 +261,15 @@ python -m uvicorn open_webui.main:app --host 127.0.0.1 --port 8080
 
 | 指标 | 数据 |
 |---|---|
-| 新增数据库表 | 7 张 |
-| 新增 API 端点 | 33 个 |
+| 新增数据库表 | 12 张 |
+| 新增 API 端点 | 39 个 |
 | 分块策略 | 7 种 |
 | Agent 角色预设 | 5 种 |
-| 新增前端页面 | 6 个 Tab + 9 个组件 |
-| 排查解决问题 | 24 个 |
+| 新增前端页面 | 8 个 Tab + 13 个组件 |
+| 排查解决问题 | 41 个 |
+| 单元测试用例 | 83 个 |
 | 上游 PR | 2 个 |
-| 开发周期 | 2026-07-20 ~ 2026-07-31 |
+| 开发周期 | 2026-07-20 ~ 2026-08-14（Phase 12 补于 2026-09-12） |
 
 ---
 
@@ -251,5 +285,5 @@ python -m uvicorn open_webui.main:app --host 127.0.0.1 --port 8080
 ## 文档
 
 - [开发文档.md](开发文档.md) — 详细技术实现与架构设计
-- [问题记录.md](问题记录.md) — 24 个技术问题的排查与解决
+- [问题记录.md](问题记录.md) — 41 个技术问题的排查与解决
 - [项目总结.md](项目总结.md) — 功能模块总结与简历描述

@@ -5,7 +5,6 @@ import io
 import json
 import logging
 import os
-import re
 import time
 import uuid
 import zipfile
@@ -81,6 +80,11 @@ from open_webui.storage.provider import Storage
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
 from open_webui.utils.access_control.files import has_access_to_file
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.llm_client import (
+    chat_completion as _faithfulness_chat,
+    extract_json as _extract_json,
+    resolve_llm_api as _faithfulness_api,
+)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -3391,19 +3395,28 @@ async def evaluate_retrieval_query(
             embedding_function=request.app.state.EMBEDDING_FUNCTION,
             k=k,
             k_reranker=k,
+            knowledge_id=id,
+            use_graph=form_data.use_graph,
         )
     except Exception as e:
         log.exception(e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     # query_collection returns: {'distances': [[]], 'documents': [[]], 'metadatas': [[]]}
+    #
+    # The full list is kept rather than truncated to k here. With graph expansion
+    # the merge is deliberately sized at k + graph_added so graph chunks are
+    # *additions*; cutting back to k at this point would let a graph chunk
+    # outrank-and-evict a base chunk, undoing that guarantee one layer up and
+    # making the A/B measure eviction instead of recall. Metrics below still use
+    # the top-k prefix so both arms stay comparable.
     results = []
     if isinstance(result, dict):
         docs_list = result.get('documents', [[]])[0] if result.get('documents') else []
         metas_list = result.get('metadatas', [[]])[0] if result.get('metadatas') else []
         dists_list = result.get('distances', [[]])[0] if result.get('distances') else []
 
-        for i in range(min(k, len(docs_list))):
+        for i in range(len(docs_list)):
             doc_text = docs_list[i] if i < len(docs_list) else ''
             results.append({
                 'chunk_id': f'result-{i}-' + (metas_list[i].get('content_hash', '')[:8] if i < len(metas_list) else ''),
@@ -3411,6 +3424,7 @@ async def evaluate_retrieval_query(
                 'score': dists_list[i] if i < len(dists_list) else None,
                 'metadata': metas_list[i] if i < len(metas_list) else {},
                 'rank': i + 1,
+                'beyond_k': i >= k,
             })
 
     # Compute metrics if judgments exist
@@ -3428,8 +3442,10 @@ async def evaluate_retrieval_query(
         relevant_ids = {j.chunk_id for j in judgments if j.relevance == 1}
         total_relevant = len(relevant_ids)
         if total_relevant > 0:
-            # recall@K
-            retrieved_ids = {r['chunk_id'] for r in results if r['chunk_id']}
+            # recall@K -- the top-k prefix only. `results` can now be longer than k
+            # (see above), and scoring the whole list would quietly turn this into
+            # recall@(k + graph_added) for one arm and not the other.
+            retrieved_ids = {r['chunk_id'] for r in results[:k] if r['chunk_id']}
             relevant_retrieved = relevant_ids & retrieved_ids
             recall_at_k = len(relevant_retrieved) / total_relevant
             # precision@K
@@ -3620,28 +3636,6 @@ Answer:
 """
 
 
-def _faithfulness_api() -> tuple[str, str, str]:
-    """返回 (base_url, api_key, model)。优先 .env 直读（对齐 exec_workflow），回退全局配置，默认 DeepSeek。"""
-    # config.* 常量在模块导入时取值，可能早于 env.py 加载 .env 而为空；
-    # 这里与 exec_workflow 一致：显式 load_dotenv(override=True) 后直读 os.getenv。
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv(override=True)
-    except ImportError:
-        pass
-    base = (
-        os.getenv("RAG_OPENAI_API_BASE_URL")
-        or os.getenv("OPENAI_API_BASE_URL")
-        or RAG_OPENAI_API_BASE_URL
-        or OPENAI_API_BASE_URL
-        or "https://api.deepseek.com/v1"
-    ).rstrip("/")
-    key = os.getenv("RAG_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or RAG_OPENAI_API_KEY or OPENAI_API_KEY or ""
-    model = os.getenv("EVAL_MODEL", "deepseek-chat")
-    return base, key, model
-
-
 def _build_source_context(chunks: list[dict]) -> str:
     """把检索片段拼成 <source> 块，id 从 1 递增，对齐离线 eval 的 build_context_string。"""
     parts = []
@@ -3660,38 +3654,6 @@ def _render_rag_prompt(question: str, chunks: list[dict]) -> str:
     prompt = template.replace("{{CONTEXT}}", context).replace("[context]", context)
     prompt = prompt.replace("{{QUERY}}", question).replace("[query]", question)
     return prompt
-
-
-def _extract_json(text: str) -> dict:
-    """从 LLM 输出稳健抽取 JSON（容忍 markdown 围栏 / 前后缀）。"""
-    text = (text or "").strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"no JSON object in judge output: {text[:200]}")
-    return json.loads(text[start : end + 1])
-
-
-async def _faithfulness_chat(messages: list[dict], temperature: float = 0.0) -> str:
-    """调 DeepSeek（OpenAI 兼容协议）拿一段文本输出。"""
-    base, key, model = _faithfulness_api()
-    if not key:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No API key configured for faithfulness evaluation (set OPENAI_API_KEY or RAG_OPENAI_API_KEY)",
-        )
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            base + "/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={"model": model, "messages": messages, "temperature": temperature, "stream": False},
-        )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"LLM call failed: HTTP {resp.status_code}")
-        data = resp.json()
-        return (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
 
 
 async def _generate_answer(question: str, chunks: list[dict]) -> str:
@@ -3788,6 +3750,10 @@ async def evaluate_faithfulness(
                 embedding_function=request.app.state.EMBEDDING_FUNCTION,
                 k=k,
                 k_reranker=k,
+                # No use_graph override: this path follows the global config, so
+                # Phase 11's faithfulness numbers stay comparable unless graph
+                # retrieval is deliberately switched on.
+                knowledge_id=id,
             )
         except Exception as e:
             log.exception(e)
